@@ -24,7 +24,7 @@ data "aws_iam_policy_document" "app_ci_trust" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${local.app_repo_full}:ref:refs/heads/main"]
+      values   = ["repo:${local.app_repo_subject}:ref:refs/heads/main"]
     }
   }
 }
@@ -81,9 +81,9 @@ data "aws_iam_policy_document" "terraform_trust" {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
       values = [
-        "repo:${local.platform_repo_full}:ref:refs/heads/main",
-        "repo:${local.platform_repo_full}:pull_request",
-        "repo:${local.platform_repo_full}:environment:infrastructure-production",
+        "repo:${local.platform_repo_subject}:ref:refs/heads/main",
+        "repo:${local.platform_repo_subject}:pull_request",
+        "repo:${local.platform_repo_subject}:environment:infrastructure-production",
       ]
     }
   }

@@ -33,14 +33,32 @@ variable "github_owner" {
   default = "qkrwlgh335-lab"
 }
 
+variable "github_owner_id" {
+  description = "Immutable GitHub owner ID present in this account's customized OIDC subject"
+  type        = string
+  default     = "306914305"
+}
+
 variable "app_repository" {
   type    = string
   default = "bank-of-anthos-app"
 }
 
+variable "app_repository_id" {
+  description = "Immutable GitHub application repository ID present in the OIDC subject"
+  type        = string
+  default     = "1353862115"
+}
+
 variable "platform_repository" {
   type    = string
   default = "bank-of-anthos-gitops"
+}
+
+variable "platform_repository_id" {
+  description = "Immutable GitHub platform repository ID present in the OIDC subject"
+  type        = string
+  default     = "1353862571"
 }
 
 variable "ecr_prefix" {

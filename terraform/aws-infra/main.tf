@@ -2,6 +2,10 @@ locals {
   azs                = ["${var.aws_region}a", "${var.aws_region}c"]
   app_repo_full      = "${var.github_owner}/${var.app_repository}"
   platform_repo_full = "${var.github_owner}/${var.platform_repository}"
+  app_repo_subject   = "${var.github_owner}@${var.github_owner_id}/${var.app_repository}@${var.app_repository_id}"
+  platform_repo_subject = (
+    "${var.github_owner}@${var.github_owner_id}/${var.platform_repository}@${var.platform_repository_id}"
+  )
   services = toset([
     "frontend",
     "userservice",
