@@ -2,6 +2,8 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: bank-dr
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
   labels:
     application: bank-of-anthos
     environment: gcp-dr
