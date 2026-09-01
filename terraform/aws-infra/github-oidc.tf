@@ -83,6 +83,7 @@ data "aws_iam_policy_document" "terraform_trust" {
       values = [
         "repo:${local.platform_repo_full}:ref:refs/heads/main",
         "repo:${local.platform_repo_full}:pull_request",
+        "repo:${local.platform_repo_full}:environment:infrastructure-production",
       ]
     }
   }

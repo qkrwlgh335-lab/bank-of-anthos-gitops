@@ -44,30 +44,48 @@ jobs:
       - name: Validate
         run: terraform -chdir=terraform/${{ matrix.stack }} validate
 
-  operate:
-    name: ${{ inputs.stack }} / ${{ inputs.action }}
-    if: github.event_name == 'workflow_dispatch'
+  plan:
+    name: ${{ inputs.stack }} / plan
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'plan'
     needs: static-checks
     runs-on: ubuntu-latest
-    environment: ${{ inputs.action == 'apply' && 'infrastructure-production' || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
 
       - name: Configure AWS credentials through GitHub OIDC
-        if: startsWith(inputs.stack, 'aws-')
         uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ vars.AWS_TERRAFORM_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Initialize AWS stack
-        if: startsWith(inputs.stack, 'aws-')
         run: terraform -chdir=terraform/${{ inputs.stack }} init -backend-config=backend.hcl.example
 
       - name: Plan
+        run: terraform -chdir=terraform/${{ inputs.stack }} plan
+
+  apply:
+    name: ${{ inputs.stack }} / approved apply
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'apply'
+    needs: static-checks
+    runs-on: ubuntu-latest
+    environment: infrastructure-production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Configure AWS credentials through GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Initialize AWS stack
+        run: terraform -chdir=terraform/${{ inputs.stack }} init -backend-config=backend.hcl.example
+
+      - name: Create reviewed plan
         run: terraform -chdir=terraform/${{ inputs.stack }} plan -out=tfplan
 
       - name: Apply reviewed plan
-        if: inputs.action == 'apply'
         run: terraform -chdir=terraform/${{ inputs.stack }} apply -auto-approve tfplan
