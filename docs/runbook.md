@@ -7,7 +7,8 @@
 3. 기존 RDS의 두 DB에 애플리케이션 계정을 만들고 Secrets Manager의
    `phase1/bank-app/runtime`, `phase1/bank-app/jwt`에 값을 등록합니다.
 4. `terraform/gcp-cicd`를 기준으로 관리자가 GAR와 GitHub WIF를 한 번 부트스트랩합니다.
-5. Terraform 출력으로 GitHub variables와 GitOps deploy key를 등록합니다.
+5. Terraform 출력으로 GitHub variables를 등록하고, 앱 저장소에는 GitOps 저장소 하나만
+   선택한 단기 Fine-grained PAT를 `GITOPS_TOKEN` Actions secret으로 등록합니다.
 6. 앱 저장소의 `Service CI and GitOps promotion`을 실행해 여섯 이미지를 양쪽 Registry에
    넣고 GitOps 태그를 `sha-<commit>`으로 변경합니다.
 7. `terraform/aws-addons`를 apply합니다.

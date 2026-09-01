@@ -9,7 +9,7 @@ flowchart LR
   GH --> CI[GitHub Actions\nservice test / build / Trivy]
   CI -->|AWS OIDC role| ECR[(ECR\n6 immutable images)]
   CI -->|GCP WIF| GAR[(Artifact Registry\nDR copy)]
-  CI -->|deploy key, tag only| GITOPS[GitOps repo]
+  CI -->|repo-scoped token, tag only| GITOPS[GitOps repo]
   GITOPS --> ARGO[Argo CD]
   ARGO --> EKS[EKS / 2 AZ\n6 Deployments + Redis]
   EKS --> ALB[AWS ALB]

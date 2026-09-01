@@ -16,9 +16,10 @@
 | `GCP_SERVICE_ACCOUNT` | GCP Terraform의 `app_ci_service_account` 출력 |
 | `GITOPS_REPOSITORY` | `qkrwlgh335-lab/bank-of-anthos-gitops` |
 
-Secrets에는 `GITOPS_DEPLOY_KEY` 하나만 둡니다. 이는 GitOps 저장소에 쓰기 가능한 전용
-SSH deploy key의 private key이며 클라우드 자격 증명이 아닙니다. Public GitOps 저장소를
-읽는 Argo CD에는 키가 필요 없습니다.
+Secrets에는 `GITOPS_TOKEN` 하나만 둡니다. 실습에서는 만료 기간을 1~7일로 지정하고
+`bank-of-anthos-gitops` 저장소 하나의 `Contents: Read and write`만 허용한 Fine-grained
+PAT를 사용합니다. 이는 클라우드 자격 증명이 아니며 실습 후 폐기합니다. Public GitOps
+저장소를 읽는 Argo CD에는 키가 필요 없습니다.
 
 ## 플랫폼 저장소 변수
 
