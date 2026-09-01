@@ -1,0 +1,38 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: bank
+
+resources:
+  - namespace.yaml
+  - ../../base
+  - external-secrets.yaml
+  - ingress.yaml
+
+images:
+  - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/frontend
+    newName: 558807819624.dkr.ecr.ap-northeast-2.amazonaws.com/bank-app/frontend
+    newTag: bootstrap
+  - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/userservice
+    newName: 558807819624.dkr.ecr.ap-northeast-2.amazonaws.com/bank-app/userservice
+    newTag: bootstrap
+  - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/contacts
+    newName: 558807819624.dkr.ecr.ap-northeast-2.amazonaws.com/bank-app/contacts
+    newTag: bootstrap
+  - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/balancereader
+    newName: 558807819624.dkr.ecr.ap-northeast-2.amazonaws.com/bank-app/balancereader
+    newTag: bootstrap
+  - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/ledgerwriter
+    newName: 558807819624.dkr.ecr.ap-northeast-2.amazonaws.com/bank-app/ledgerwriter
+    newTag: bootstrap
+  - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/transactionhistory
+    newName: 558807819624.dkr.ecr.ap-northeast-2.amazonaws.com/bank-app/transactionhistory
+    newTag: bootstrap
+
+patches:
+  - target:
+      kind: Deployment
+      labelSelector: application=bank-of-anthos
+    patch: |-
+      - op: remove
+        path: /spec/template/metadata/annotations/proxy.istio.io~1config

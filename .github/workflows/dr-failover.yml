@@ -1,0 +1,185 @@
+name: DR failover to GCP
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Preflight is read-only; failover performs irreversible DB promotion
+        required: true
+        default: preflight
+        type: choice
+        options: [preflight, failover]
+      incident_id:
+        description: Incident/change ticket recorded in the deployment audit
+        required: true
+        type: string
+      image_tag:
+        description: Previously replicated GAR tag (sha- plus the 40-character commit SHA)
+        required: true
+        type: string
+      confirmation:
+        description: For failover only, enter PROMOTE-GCP
+        required: false
+        type: string
+      rpo_acknowledgement:
+        description: For failover only, acknowledge that the last unreplicated AWS transactions can be lost by entering ACCEPT-LAST-REPLICATED-DATA
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: gcp-dr-failover
+  cancel-in-progress: false
+
+env:
+  GCP_PROJECT_ID: kdt4-1-506106
+  GCP_REGION: asia-northeast3
+  MIGRATION_JOB: phase1-dms-poc-job
+  CLOUD_SQL_INSTANCE: phase1-dms-poc-destination
+
+jobs:
+  validate-input:
+    name: Validate request
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate immutable tag and explicit confirmation
+        env:
+          MODE: ${{ inputs.mode }}
+          TAG: ${{ inputs.image_tag }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          RPO_ACKNOWLEDGEMENT: ${{ inputs.rpo_acknowledgement }}
+          DB_BOOTSTRAP_READY: ${{ vars.DR_DB_BOOTSTRAP_READY }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$TAG" =~ ^sha-[0-9a-f]{40}$ ]] || { echo "Invalid immutable tag"; exit 1; }
+          if [[ "$MODE" == "failover" && "$CONFIRMATION" != "PROMOTE-GCP" ]]; then
+            echo "Failover requires exact PROMOTE-GCP confirmation"
+            exit 1
+          fi
+          if [[ "$MODE" == "failover" && "$RPO_ACKNOWLEDGEMENT" != "ACCEPT-LAST-REPLICATED-DATA" ]]; then
+            echo "Failover requires explicit RPO acknowledgement"
+            exit 1
+          fi
+          if [[ "$MODE" == "failover" && "$DB_BOOTSTRAP_READY" != "true" ]]; then
+            echo "GCP post-promotion database roles/grants and runtime secrets are not certified"
+            exit 1
+          fi
+
+  preflight:
+    name: Read-only DR readiness checks
+    needs: validate-input
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DR_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
+      - name: Check CDC, standby DB, GAR image, and GKE
+        env:
+          MODE: ${{ inputs.mode }}
+          TAG: ${{ inputs.image_tag }}
+          GKE_CLUSTER: ${{ vars.GKE_CLUSTER }}
+        run: |
+          set -Eeuo pipefail
+          state=$(gcloud database-migration migration-jobs describe "$MIGRATION_JOB" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(state)')
+          phase=$(gcloud database-migration migration-jobs describe "$MIGRATION_JOB" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(phase)')
+          {
+            echo "### DR preflight"
+            echo "- Incident: ${{ inputs.incident_id }}"
+            echo "- Requested mode: $MODE"
+            echo "- DMS state / phase: $state / $phase"
+            echo "- Image tag: $TAG"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          [[ "$phase" == "CDC" ]] || { echo "Destination never reached the CDC phase"; exit 1; }
+          if [[ "$state" != "RUNNING" ]]; then
+            if [[ "$MODE" == "preflight" ]]; then
+              echo "Routine readiness check requires DMS RUNNING/CDC"
+              exit 1
+            fi
+            echo "::warning::DMS is $state. In a vendor outage the promotion uses only the last data already replicated to GCP."
+          fi
+
+          read -r sql_type sql_state < <(gcloud sql instances describe "$CLOUD_SQL_INSTANCE" --project "$GCP_PROJECT_ID" --format='value(instanceType,state)')
+          [[ "$sql_type" == "READ_REPLICA_INSTANCE" && "$sql_state" == "RUNNABLE" ]] || { echo "Cloud SQL is not a runnable read replica"; exit 1; }
+
+          for service in frontend userservice contacts balancereader ledgerwriter transactionhistory; do
+            gcloud artifacts docker images describe \
+              "$GCP_REGION-docker.pkg.dev/$GCP_PROJECT_ID/bank-of-anthos/$service:$TAG" \
+              --project "$GCP_PROJECT_ID" \
+              --format='value(image_summary.digest)' >/dev/null
+          done
+          gcloud container clusters describe "$GKE_CLUSTER" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(name,status)'
+          gcloud secrets versions describe latest --secret phase1-bank-app-runtime --project "$GCP_PROJECT_ID" --format='value(state)' | grep -qx ENABLED
+          gcloud secrets versions describe latest --secret phase1-bank-app-jwt --project "$GCP_PROJECT_ID" --format='value(state)' | grep -qx ENABLED
+
+  approved-failover:
+    name: Approved DB promote and GKE activation
+    if: inputs.mode == 'failover'
+    needs: preflight
+    runs-on: ubuntu-latest
+    environment: gcp-dr-approval
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DR_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: Promote Cloud SQL destination to writer
+        run: |
+          set -Eeuo pipefail
+          gcloud database-migration migration-jobs promote "$MIGRATION_JOB" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --quiet
+          for attempt in {1..30}; do
+            read -r sql_type sql_state < <(gcloud sql instances describe "$CLOUD_SQL_INSTANCE" --project "$GCP_PROJECT_ID" --format='value(instanceType,state)')
+            if [[ "$sql_type" != "READ_REPLICA_INSTANCE" && "$sql_state" == "RUNNABLE" ]]; then
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "Cloud SQL promotion did not become ready within 10 minutes"
+          exit 1
+
+      - name: Expand pilot-light GKE capacity
+        env:
+          GKE_CLUSTER: ${{ vars.GKE_CLUSTER }}
+          GKE_NODE_POOL: ${{ vars.GKE_NODE_POOL }}
+          GKE_FAILOVER_NODES: ${{ vars.GKE_FAILOVER_NODES }}
+        run: |
+          gcloud container clusters resize "$GKE_CLUSTER" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --node-pool "$GKE_NODE_POOL" --num-nodes "$GKE_FAILOVER_NODES" --quiet
+          gcloud container clusters get-credentials "$GKE_CLUSTER" --project "$GCP_PROJECT_ID" --region "$GCP_REGION"
+
+      - name: Activate immutable GAR images in GCP GitOps overlay
+        env:
+          TAG: ${{ inputs.image_tag }}
+          INCIDENT_ID: ${{ inputs.incident_id }}
+        run: |
+          python scripts/activate-gcp-dr.py --file gitops/apps/bank-of-anthos/overlays/gcp-dr/kustomization.yaml --tag "$TAG" --replicas 1
+          git config user.name "dr-failover-bot"
+          git config user.email "dr-failover-bot@users.noreply.github.com"
+          git add gitops/apps/bank-of-anthos/overlays/gcp-dr/kustomization.yaml
+          git commit -m "dr: activate GCP for ${INCIDENT_ID} with ${TAG}"
+          git push origin HEAD:main
+
+      - name: Bootstrap GCP-side Argo application and smoke test
+        run: |
+          kubectl apply -f gitops/bootstrap/bank-of-anthos-gcp-dr.yaml
+          kubectl -n bank-dr rollout status deployment/frontend --timeout=15m
+          kubectl -n bank-dr get pods,ingress
+
+  traffic-cutover-checkpoint:
+    name: Approve traffic cutover after smoke test
+    if: inputs.mode == 'failover'
+    needs: approved-failover
+    runs-on: ubuntu-latest
+    environment: gcp-traffic-cutover
+    steps:
+      - run: echo "Smoke test passed and traffic cutover was approved. DNS automation is intentionally not configured until the authoritative DNS provider is selected."

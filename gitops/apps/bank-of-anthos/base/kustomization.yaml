@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - config.yaml
+  - frontend.yaml
+  - userservice.yaml
+  - contacts.yaml
+  - balance-reader.yaml
+  - ledger-writer.yaml
+  - transaction-history.yaml
+  - redis.yaml

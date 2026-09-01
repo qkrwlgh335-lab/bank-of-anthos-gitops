@@ -1,0 +1,56 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: bank-dr
+
+resources:
+  - namespace.yaml
+  - ../../base
+  - external-secrets.yaml
+  - ingress.yaml
+
+images:
+  - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/frontend
+    newName: asia-northeast3-docker.pkg.dev/kdt4-1-506106/bank-of-anthos/frontend
+    newTag: bootstrap
+  - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/userservice
+    newName: asia-northeast3-docker.pkg.dev/kdt4-1-506106/bank-of-anthos/userservice
+    newTag: bootstrap
+  - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/contacts
+    newName: asia-northeast3-docker.pkg.dev/kdt4-1-506106/bank-of-anthos/contacts
+    newTag: bootstrap
+  - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/balancereader
+    newName: asia-northeast3-docker.pkg.dev/kdt4-1-506106/bank-of-anthos/balancereader
+    newTag: bootstrap
+  - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/ledgerwriter
+    newName: asia-northeast3-docker.pkg.dev/kdt4-1-506106/bank-of-anthos/ledgerwriter
+    newTag: bootstrap
+  - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/transactionhistory
+    newName: asia-northeast3-docker.pkg.dev/kdt4-1-506106/bank-of-anthos/transactionhistory
+    newTag: bootstrap
+
+# Pilot-light: Argo CD and the cluster can remain available while business pods stay at zero.
+replicas:
+  - name: frontend
+    count: 0
+  - name: userservice
+    count: 0
+  - name: contacts
+    count: 0
+  - name: balancereader
+    count: 0
+  - name: ledgerwriter
+    count: 0
+  - name: transactionhistory
+    count: 0
+  - name: redis
+    count: 0
+
+patches:
+  - path: frontend-neg-patch.yaml
+  - target:
+      kind: Deployment
+      labelSelector: application=bank-of-anthos
+    patch: |-
+      - op: remove
+        path: /spec/template/metadata/annotations/proxy.istio.io~1config

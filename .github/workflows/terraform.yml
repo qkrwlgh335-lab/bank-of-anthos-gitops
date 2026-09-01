@@ -1,0 +1,73 @@
+name: Terraform plan and apply
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "terraform/**"
+      - ".github/workflows/terraform.yml"
+  workflow_dispatch:
+    inputs:
+      stack:
+        description: Terraform root to operate
+        required: true
+        type: choice
+        options:
+          - aws-infra
+          - aws-addons
+      action:
+        description: Plan or apply
+        required: true
+        type: choice
+        options:
+          - plan
+          - apply
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  static-checks:
+    name: Format and validate
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        stack: [aws-infra, aws-addons, gcp-cicd]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: Check formatting
+        run: terraform -chdir=terraform/${{ matrix.stack }} fmt -check -recursive
+      - name: Initialize without remote state
+        run: terraform -chdir=terraform/${{ matrix.stack }} init -backend=false
+      - name: Validate
+        run: terraform -chdir=terraform/${{ matrix.stack }} validate
+
+  operate:
+    name: ${{ inputs.stack }} / ${{ inputs.action }}
+    if: github.event_name == 'workflow_dispatch'
+    needs: static-checks
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.action == 'apply' && 'infrastructure-production' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Configure AWS credentials through GitHub OIDC
+        if: startsWith(inputs.stack, 'aws-')
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Initialize AWS stack
+        if: startsWith(inputs.stack, 'aws-')
+        run: terraform -chdir=terraform/${{ inputs.stack }} init -backend-config=backend.hcl.example
+
+      - name: Plan
+        run: terraform -chdir=terraform/${{ inputs.stack }} plan -out=tfplan
+
+      - name: Apply reviewed plan
+        if: inputs.action == 'apply'
+        run: terraform -chdir=terraform/${{ inputs.stack }} apply -auto-approve tfplan
