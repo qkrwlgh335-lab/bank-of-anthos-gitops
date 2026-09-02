@@ -15,6 +15,19 @@
 | Branch protection | 완료 | 두 저장소 main에 고정 required check 적용 |
 | DNS 장애조치 | 미구현 | 설계 승인, 도메인, Cloudflare 권한을 받은 뒤 구현 |
 
+## 최종 실행 증거
+
+- [전체 6개 CI run 33582768076](https://github.com/qkrwlgh335-lab/bank-of-anthos-app/actions/runs/33582768076):
+  6개 test/build, HIGH/CRITICAL gate, ECR/GAR push, 고정 CI gate, GitOps promotion 성공
+- 공통 이미지 태그: `sha-a5a94e243a17b51161229d7be85787d6e8f472c5`
+- [GCP platform-preflight run 33583014975](https://github.com/qkrwlgh335-lab/bank-of-anthos-gitops/actions/runs/33583014975):
+  DB 없이 GKE/Argo/External Secrets/0 replicas 성공
+- [공통 SHA platform-preflight run 33583119645](https://github.com/qkrwlgh335-lab/bank-of-anthos-gitops/actions/runs/33583119645):
+  위 상태와 GAR의 공통 태그 6개 존재를 함께 검증
+- [gcp-dr OIDC plan run 33583017408](https://github.com/qkrwlgh335-lab/bank-of-anthos-gitops/actions/runs/33583017408):
+  다섯 root 정적 검사, 고정 Terraform gate, gcp-dr plan 성공
+- [gcp-addons OIDC plan run 33582013842](https://github.com/qkrwlgh335-lab/bank-of-anthos-gitops/actions/runs/33582013842): 성공
+
 ## GCP Pilot Light 실제 구성
 
 - 리전: `asia-northeast3`

@@ -31,6 +31,19 @@ GCP는 regional GKE와 pilot node 1대, GCP-side Argo CD/External Secrets까지 
 - 이미지 태그: `sha-5a4825edf92152fd081f93c89cba5845bde72b9b`
 - 각 서비스의 ECR digest와 GAR digest 일치 확인
 
+HIGH 차단 보완 후 최종 전체 재검증은
+[app run 33582768076](https://github.com/qkrwlgh335-lab/bank-of-anthos-app/actions/runs/33582768076)이며,
+6개 서비스가 공통 태그 `sha-a5a94e243a17b51161229d7be85787d6e8f472c5`로 모두 성공했다.
+
+### 4. GCP Pilot Light
+
+- GKE `phase1-bank-gke`, pilot node 1대: Ready
+- GCP Argo Application `bank-of-anthos-gcp-dr`: `Synced / Healthy`
+- External Secrets 2개: `SecretSynced / True`
+- 6개 업무 Deployment와 Redis: 모두 replicas 0
+- [platform-preflight run 33583014975](https://github.com/qkrwlgh335-lab/bank-of-anthos-gitops/actions/runs/33583014975): 성공
+- DB가 없어 data/failover/traffic job은 skipped
+
 ### 2. 서비스별 독립 배포
 
 - [app run 33551155972](https://github.com/qkrwlgh335-lab/bank-of-anthos-app/actions/runs/33551155972): 성공
