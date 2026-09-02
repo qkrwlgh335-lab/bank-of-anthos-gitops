@@ -7,6 +7,7 @@ resources:
   - namespace.yaml
   - ../../base
   - external-secrets.yaml
+  - platform-drill-probe.yaml
   # DR-ACTIVATION-RESOURCE: the approved failover workflow adds ingress.yaml here.
 
 images:
@@ -45,12 +46,14 @@ replicas:
     count: 0
   - name: redis
     count: 0
+  - name: dr-platform-probe
+    count: 0
 
 patches:
   # DR-ACTIVATION-PATCH: the approved failover workflow adds frontend-neg-patch.yaml here.
   - target:
       kind: Deployment
-      labelSelector: application=bank-of-anthos
+      labelSelector: application=bank-of-anthos,component!=platform-drill
     patch: |-
       - op: remove
         path: /spec/template/metadata/annotations/proxy.istio.io~1config

@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dr-platform-probe
+  labels:
+    app: dr-platform-probe
+    application: bank-of-anthos
+    component: platform-drill
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: dr-platform-probe
+  template:
+    metadata:
+      labels:
+        app: dr-platform-probe
+        application: bank-of-anthos
+        component: platform-drill
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: frontend-image
+          image: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/frontend
+          command: ["python", "--version"]
+        - name: userservice-image
+          image: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/userservice
+          command: ["python", "--version"]
+        - name: contacts-image
+          image: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/contacts
+          command: ["python", "--version"]
+        - name: balancereader-image
+          image: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/balancereader
+          command: ["java", "-version"]
+        - name: ledgerwriter-image
+          image: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/ledgerwriter
+          command: ["java", "-version"]
+        - name: transactionhistory-image
+          image: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/transactionhistory
+          command: ["java", "-version"]
+      containers:
+        - name: runtime
+          image: redis:7.4-alpine
+          args: ["redis-server", "--save", "", "--appendonly", "no"]
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 2
+            periodSeconds: 2
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
