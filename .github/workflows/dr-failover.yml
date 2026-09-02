@@ -4,25 +4,25 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Preflight is read-only; failover performs irreversible DB promotion
+        description: Platform is DB-independent; data checks CDC; failover promotes DB and activates GKE
         required: true
-        default: preflight
+        default: platform-preflight
         type: choice
-        options: [preflight, failover]
+        options: [platform-preflight, data-preflight, failover]
       incident_id:
         description: Incident/change ticket recorded in the deployment audit
         required: true
         type: string
       image_tag:
-        description: Previously replicated GAR tag (sha- plus the 40-character commit SHA)
-        required: true
+        description: Failover GAR tag (sha- plus 40-character SHA); optional for preflight
+        required: false
         type: string
       confirmation:
         description: For failover only, enter PROMOTE-GCP
         required: false
         type: string
       rpo_acknowledgement:
-        description: For failover only, acknowledge that the last unreplicated AWS transactions can be lost by entering ACCEPT-LAST-REPLICATED-DATA
+        description: For failover only, enter ACCEPT-LAST-REPLICATED-DATA
         required: false
         type: string
 
@@ -37,15 +37,16 @@ concurrency:
 env:
   GCP_PROJECT_ID: kdt4-1-506106
   GCP_REGION: asia-northeast3
-  MIGRATION_JOB: phase1-dms-poc-job
-  CLOUD_SQL_INSTANCE: phase1-dms-poc-destination
+  GAR_REPOSITORY: bank-of-anthos
+  MIGRATION_JOB: ${{ vars.GCP_MIGRATION_JOB }}
+  CLOUD_SQL_INSTANCE: ${{ vars.GCP_CLOUD_SQL_INSTANCE }}
 
 jobs:
   validate-input:
-    name: Validate request
+    name: Validate request and safety lock
     runs-on: ubuntu-latest
     steps:
-      - name: Validate immutable tag and explicit confirmation
+      - name: Validate immutable tag and explicit confirmations
         env:
           MODE: ${{ inputs.mode }}
           TAG: ${{ inputs.image_tag }}
@@ -54,7 +55,13 @@ jobs:
           DB_BOOTSTRAP_READY: ${{ vars.DR_DB_BOOTSTRAP_READY }}
         run: |
           set -Eeuo pipefail
-          [[ "$TAG" =~ ^sha-[0-9a-f]{40}$ ]] || { echo "Invalid immutable tag"; exit 1; }
+          if [[ -n "$TAG" ]]; then
+            [[ "$TAG" =~ ^sha-[0-9a-f]{40}$ ]] || { echo "Invalid immutable tag"; exit 1; }
+          fi
+          if [[ "$MODE" == "failover" && -z "$TAG" ]]; then
+            echo "Failover requires one immutable tag already present for all six GAR images"
+            exit 1
+          fi
           if [[ "$MODE" == "failover" && "$CONFIRMATION" != "PROMOTE-GCP" ]]; then
             echo "Failover requires exact PROMOTE-GCP confirmation"
             exit 1
@@ -64,68 +71,14 @@ jobs:
             exit 1
           fi
           if [[ "$MODE" == "failover" && "$DB_BOOTSTRAP_READY" != "true" ]]; then
-            echo "GCP post-promotion database roles/grants and runtime secrets are not certified"
+            echo "DR_DB_BOOTSTRAP_READY is false: no certified Cloud SQL writer, grants, or runtime secrets"
             exit 1
           fi
 
-  preflight:
-    name: Read-only DR readiness checks
+  platform-preflight:
+    name: GKE pilot-light and artifact preflight
     needs: validate-input
     runs-on: ubuntu-latest
-    steps:
-      - uses: google-github-actions/auth@v3
-        with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_DR_SERVICE_ACCOUNT }}
-      - uses: google-github-actions/setup-gcloud@v3
-      - name: Check CDC, standby DB, GAR image, and GKE
-        env:
-          MODE: ${{ inputs.mode }}
-          TAG: ${{ inputs.image_tag }}
-          GKE_CLUSTER: ${{ vars.GKE_CLUSTER }}
-        run: |
-          set -Eeuo pipefail
-          state=$(gcloud database-migration migration-jobs describe "$MIGRATION_JOB" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(state)')
-          phase=$(gcloud database-migration migration-jobs describe "$MIGRATION_JOB" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(phase)')
-          {
-            echo "### DR preflight"
-            echo "- Incident: ${{ inputs.incident_id }}"
-            echo "- Requested mode: $MODE"
-            echo "- DMS state / phase: $state / $phase"
-            echo "- Image tag: $TAG"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          [[ "$phase" == "CDC" ]] || { echo "Destination never reached the CDC phase"; exit 1; }
-          if [[ "$state" != "RUNNING" ]]; then
-            if [[ "$MODE" == "preflight" ]]; then
-              echo "Routine readiness check requires DMS RUNNING/CDC"
-              exit 1
-            fi
-            echo "::warning::DMS is $state. In a vendor outage the promotion uses only the last data already replicated to GCP."
-          fi
-
-          read -r sql_type sql_state < <(gcloud sql instances describe "$CLOUD_SQL_INSTANCE" --project "$GCP_PROJECT_ID" --format='value(instanceType,state)')
-          [[ "$sql_type" == "READ_REPLICA_INSTANCE" && "$sql_state" == "RUNNABLE" ]] || { echo "Cloud SQL is not a runnable read replica"; exit 1; }
-
-          for service in frontend userservice contacts balancereader ledgerwriter transactionhistory; do
-            gcloud artifacts docker images describe \
-              "$GCP_REGION-docker.pkg.dev/$GCP_PROJECT_ID/bank-of-anthos/$service:$TAG" \
-              --project "$GCP_PROJECT_ID" \
-              --format='value(image_summary.digest)' >/dev/null
-          done
-          gcloud container clusters describe "$GKE_CLUSTER" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(name,status)'
-          gcloud secrets versions describe latest --secret phase1-bank-app-runtime --project "$GCP_PROJECT_ID" --format='value(state)' | grep -qx ENABLED
-          gcloud secrets versions describe latest --secret phase1-bank-app-jwt --project "$GCP_PROJECT_ID" --format='value(state)' | grep -qx ENABLED
-
-  approved-failover:
-    name: Approved DB promote and GKE activation
-    if: inputs.mode == 'failover'
-    needs: preflight
-    runs-on: ubuntu-latest
-    environment: gcp-dr-approval
-    permissions:
-      contents: write
-      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: google-github-actions/auth@v3
@@ -133,6 +86,129 @@ jobs:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_DR_SERVICE_ACCOUNT }}
       - uses: google-github-actions/setup-gcloud@v3
+      - uses: google-github-actions/get-gke-credentials@v3
+        with:
+          cluster_name: ${{ vars.GKE_CLUSTER }}
+          location: ${{ env.GCP_REGION }}
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Verify GKE, Argo CD, External Secrets, and immutable GAR images
+        env:
+          MODE: ${{ inputs.mode }}
+          TAG: ${{ inputs.image_tag }}
+        run: |
+          set -Eeuo pipefail
+          status=$(gcloud container clusters describe "${{ vars.GKE_CLUSTER }}" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(status)')
+          [[ "$status" == "RUNNING" ]] || { echo "GKE is not RUNNING"; exit 1; }
+
+          kubectl -n argocd rollout status statefulset/argocd-application-controller --timeout=3m
+          kubectl -n argocd rollout status deployment/argocd-server --timeout=3m
+          kubectl -n external-secrets rollout status deployment/external-secrets --timeout=3m
+          kubectl -n argocd get application bank-of-anthos-gcp-dr
+
+          sync=$(kubectl -n argocd get application bank-of-anthos-gcp-dr -o jsonpath='{.status.sync.status}')
+          health=$(kubectl -n argocd get application bank-of-anthos-gcp-dr -o jsonpath='{.status.health.status}')
+          [[ "$sync" == "Synced" && "$health" == "Healthy" ]] || { echo "GCP Argo application is $sync/$health"; exit 1; }
+
+          replicas=$(kubectl -n bank-dr get deployment -l application=bank-of-anthos -o jsonpath='{range .items[*]}{.metadata.name}={.spec.replicas}{"\n"}{end}')
+          echo "$replicas"
+          if echo "$replicas" | grep -Eq '=[1-9][0-9]*$'; then
+            echo "Pilot-light safety check failed: a business deployment is active"
+            exit 1
+          fi
+
+          for secret in phase1-bank-app-runtime phase1-bank-app-jwt; do
+            gcloud secrets versions describe latest --secret "$secret" --project "$GCP_PROJECT_ID" --format='value(state)' | grep -qx ENABLED
+          done
+          kubectl -n bank-dr wait externalsecret/bank-app-runtime --for=condition=Ready --timeout=3m
+          kubectl -n bank-dr wait externalsecret/bank-app-jwt --for=condition=Ready --timeout=3m
+
+          if [[ -n "$TAG" ]]; then
+            for service in frontend userservice contacts balancereader ledgerwriter transactionhistory; do
+              gcloud artifacts docker images describe \
+                "$GCP_REGION-docker.pkg.dev/$GCP_PROJECT_ID/$GAR_REPOSITORY/$service:$TAG" \
+                --project "$GCP_PROJECT_ID" --format='value(image_summary.digest)' >/dev/null
+            done
+          else
+            mapfile -t images < <(kubectl -n bank-dr get deployment -l application=bank-of-anthos -o jsonpath='{range .items[*]}{range .spec.template.spec.containers[*]}{.image}{"\n"}{end}{end}' | grep pkg.dev)
+            for image in "${images[@]}"; do
+              [[ "$image" =~ :sha-[0-9a-f]{40}$ ]] || { echo "Non-immutable GCP image: $image"; exit 1; }
+              gcloud artifacts docker images describe "$image" --project "$GCP_PROJECT_ID" --format='value(image_summary.digest)' >/dev/null
+            done
+          fi
+
+          {
+            echo "### GCP platform preflight"
+            echo "- Incident: ${{ inputs.incident_id }}"
+            echo "- Mode: $MODE"
+            echo "- GKE: $status"
+            echo "- Argo CD: $sync / $health"
+            echo "- Business replicas: zero"
+            echo "- DB safety lock: ${{ vars.DR_DB_BOOTSTRAP_READY }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  data-preflight:
+    name: Cloud SQL and CDC preflight
+    if: inputs.mode != 'platform-preflight'
+    needs: platform-preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DR_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
+      - name: Verify configured migration job and standby database
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -Eeuo pipefail
+          [[ -n "$MIGRATION_JOB" && -n "$CLOUD_SQL_INSTANCE" ]] || {
+            echo "Set GCP_MIGRATION_JOB and GCP_CLOUD_SQL_INSTANCE after rebuilding the DB PoC"
+            exit 1
+          }
+          state=$(gcloud database-migration migration-jobs describe "$MIGRATION_JOB" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(state)')
+          phase=$(gcloud database-migration migration-jobs describe "$MIGRATION_JOB" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(phase)')
+          [[ "$phase" == "CDC" ]] || { echo "Destination never reached CDC"; exit 1; }
+          if [[ "$MODE" == "data-preflight" && "$state" != "RUNNING" ]]; then
+            echo "Routine readiness requires DMS RUNNING/CDC"
+            exit 1
+          fi
+          if [[ "$MODE" == "failover" && "$state" != "RUNNING" ]]; then
+            echo "::warning::DMS is $state; only the last data already replicated to GCP is available"
+          fi
+
+          read -r sql_type sql_state < <(gcloud sql instances describe "$CLOUD_SQL_INSTANCE" --project "$GCP_PROJECT_ID" --format='value(instanceType,state)')
+          [[ "$sql_type" == "READ_REPLICA_INSTANCE" && "$sql_state" == "RUNNABLE" ]] || { echo "Cloud SQL is not a runnable migration replica"; exit 1; }
+          {
+            echo "### GCP data preflight"
+            echo "- DMS: $state / $phase"
+            echo "- Cloud SQL: $sql_type / $sql_state"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  approved-failover:
+    name: Approved DB promotion and GKE activation
+    if: inputs.mode == 'failover'
+    needs: data-preflight
+    runs-on: ubuntu-latest
+    environment: gcp-dr-approval
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITOPS_TOKEN }}
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DR_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
+      - uses: google-github-actions/get-gke-credentials@v3
+        with:
+          cluster_name: ${{ vars.GKE_CLUSTER }}
+          location: ${{ env.GCP_REGION }}
+          project_id: ${{ env.GCP_PROJECT_ID }}
 
       - name: Promote Cloud SQL destination to writer
         run: |
@@ -149,15 +225,12 @@ jobs:
           exit 1
 
       - name: Expand pilot-light GKE capacity
-        env:
-          GKE_CLUSTER: ${{ vars.GKE_CLUSTER }}
-          GKE_NODE_POOL: ${{ vars.GKE_NODE_POOL }}
-          GKE_FAILOVER_NODES: ${{ vars.GKE_FAILOVER_NODES }}
         run: |
-          gcloud container clusters resize "$GKE_CLUSTER" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --node-pool "$GKE_NODE_POOL" --num-nodes "$GKE_FAILOVER_NODES" --quiet
-          gcloud container clusters get-credentials "$GKE_CLUSTER" --project "$GCP_PROJECT_ID" --region "$GCP_REGION"
+          gcloud container clusters resize "${{ vars.GKE_CLUSTER }}" \
+            --project "$GCP_PROJECT_ID" --region "$GCP_REGION" \
+            --node-pool "${{ vars.GKE_NODE_POOL }}" --num-nodes "${{ vars.GKE_FAILOVER_NODES }}" --quiet
 
-      - name: Activate immutable GAR images in GCP GitOps overlay
+      - name: Activate immutable GAR images in the GCP overlay
         env:
           TAG: ${{ inputs.image_tag }}
           INCIDENT_ID: ${{ inputs.incident_id }}
@@ -169,7 +242,7 @@ jobs:
           git commit -m "dr: activate GCP for ${INCIDENT_ID} with ${TAG}"
           git push origin HEAD:main
 
-      - name: Bootstrap GCP-side Argo application and smoke test
+      - name: Reconcile and smoke test
         run: |
           kubectl apply -f gitops/bootstrap/bank-of-anthos-gcp-dr.yaml
           kubectl -n bank-dr rollout status deployment/frontend --timeout=15m
@@ -182,4 +255,4 @@ jobs:
     runs-on: ubuntu-latest
     environment: gcp-traffic-cutover
     steps:
-      - run: echo "Smoke test passed and traffic cutover was approved. DNS automation is intentionally not configured until the authoritative DNS provider is selected."
+      - run: echo "Smoke test passed. DNS stays unchanged until separate authoritative-DNS approval."

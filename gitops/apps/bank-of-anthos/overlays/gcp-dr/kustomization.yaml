@@ -12,22 +12,22 @@ resources:
 images:
   - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/frontend
     newName: asia-northeast3-docker.pkg.dev/kdt4-1-506106/bank-of-anthos/frontend
-    newTag: bootstrap
+    newTag: sha-0c42a52d25a7e2f572f8f6078055fa79fa2e5c98
   - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/userservice
     newName: asia-northeast3-docker.pkg.dev/kdt4-1-506106/bank-of-anthos/userservice
-    newTag: bootstrap
+    newTag: sha-0c42a52d25a7e2f572f8f6078055fa79fa2e5c98
   - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/contacts
     newName: asia-northeast3-docker.pkg.dev/kdt4-1-506106/bank-of-anthos/contacts
-    newTag: bootstrap
+    newTag: sha-0c42a52d25a7e2f572f8f6078055fa79fa2e5c98
   - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/balancereader
     newName: asia-northeast3-docker.pkg.dev/kdt4-1-506106/bank-of-anthos/balancereader
-    newTag: bootstrap
+    newTag: sha-5a4825edf92152fd081f93c89cba5845bde72b9b
   - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/ledgerwriter
     newName: asia-northeast3-docker.pkg.dev/kdt4-1-506106/bank-of-anthos/ledgerwriter
-    newTag: bootstrap
+    newTag: sha-5a4825edf92152fd081f93c89cba5845bde72b9b
   - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/transactionhistory
     newName: asia-northeast3-docker.pkg.dev/kdt4-1-506106/bank-of-anthos/transactionhistory
-    newTag: bootstrap
+    newTag: sha-5a4825edf92152fd081f93c89cba5845bde72b9b
 
 # Pilot-light: Argo CD and the cluster can remain available while business pods stay at zero.
 replicas:
