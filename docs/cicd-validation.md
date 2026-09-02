@@ -7,9 +7,9 @@
 `app main 변경 → 선택 서비스 test/build/Trivy → ECR/GAR 동일 이미지 push → GitOps tag
 변경 → Argo CD 자동 reconcile → EKS 롤링 배포 → ALB 사용자 요청`을 끝까지 확인했다.
 
-GCP 승인형 DR은 이 완료 판정에 포함하지 않는다. GAR 사전 적재와 승인 workflow는 있지만
-GKE, GCP-side Argo CD/External Secrets, DR 권한과 DB bootstrap이 아직 준비되지 않아 실제
-failover를 실행하지 않았다.
+GCP는 regional GKE와 pilot node 1대, GCP-side Argo CD/External Secrets까지 실제 생성했고
+`bank-of-anthos-gcp-dr` Application의 `Synced / Healthy`, 업무 replicas 0을 확인했다. 다만
+사용자가 DB PoC 리소스를 삭제했으므로 Cloud SQL 승격과 전체 failover는 의도적으로 잠갔다.
 
 ## 구성과 책임 경계
 
@@ -80,21 +80,22 @@ curl.exe "http://$AlbHost/ready"
 완료:
 
 - 서비스별 CI와 전체 6개 CI
-- CRITICAL 취약점 gate
+- 수정 가능한 HIGH/CRITICAL 취약점 gate
 - 같은 이미지의 ECR/GAR 이중 적재
 - AWS/GCP keyless federation
 - 성공 서비스만 GitOps tag 승격
 - Argo CD 자동 동기화와 self-heal
 - EKS/ALB 로그인 smoke test
 - Terraform format/validate와 OIDC plan 실행
+- GCP GKE Pilot Light와 GCP Argo CD/External Secrets
+- 두 저장소 branch protection과 고정 required check
 
 미완료:
 
-- GCP GKE Pilot Light 실제 생성 및 GCP Argo CD 배포
 - Cloud SQL 승격 후 DB role/grant/secret bootstrap
 - DR 승인 workflow의 실제 failover와 RTO/RPO 계측
 - DNS 실제 전환
-- branch protection, HTTPS, 관측성, NetworkPolicy
+- HTTPS, 관측성, NetworkPolicy
 
 ## IaC 재검증 결과
 

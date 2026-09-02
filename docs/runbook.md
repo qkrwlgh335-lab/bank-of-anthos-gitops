@@ -13,6 +13,17 @@
    넣고 GitOps 태그를 `sha-<commit>`으로 변경합니다.
 7. `terraform/aws-addons`를 apply합니다.
 8. `scripts/bootstrap-argocd.ps1`로 Argo Application을 한 번 등록합니다.
+9. `terraform/gcp-dr`과 `terraform/gcp-addons`를 적용하고 GCP Argo Application을 등록합니다.
+10. DB가 없는 동안 GCP 업무 replicas 0과 `DR_DB_BOOTSTRAP_READY=false`를 유지합니다.
+
+## GCP 플랫폼 사전 점검
+
+`DR failover to GCP` workflow를 `platform-preflight`로 실행합니다. 이 모드는 DB가 없어도
+GKE, Argo CD, External Secrets, GAR 이미지와 0 replicas를 검사하며 Cloud SQL 승격이나
+노드 확장을 수행하지 않습니다.
+
+DB를 다시 만든 뒤 `data-preflight`를 실행하고, 실제 장애 훈련에서만 두 Environment 승인과
+확인 문자열을 갖춰 `failover`를 사용합니다.
 
 ## 정상 흐름 검증
 

@@ -6,7 +6,9 @@
 terraform/
 ├─ aws-infra/    AWS 기반 인프라와 CI IAM
 ├─ aws-addons/   EKS 내부 플랫폼 add-on
-└─ gcp-cicd/     GAR와 GitHub WIF
+├─ gcp-cicd/     GAR와 GitHub WIF
+├─ gcp-dr/       GKE Pilot Light, VPC/NAT, DR IAM, Secret 컨테이너
+└─ gcp-addons/   GCP Argo CD와 External Secrets
 ```
 
 최초 적용 순서는 `state bootstrap → aws-infra → runtime secret 값 준비 → gcp-cicd → 앱 CI
@@ -20,6 +22,8 @@ terraform/
 | `aws-infra` | S3 `phase1-cicd-tfstate-558807819624` | `aws-infra/terraform.tfstate` |
 | `aws-addons` | 같은 S3 | `aws-addons/terraform.tfstate` |
 | `gcp-cicd` | GCS `phase1-cicd-tfstate-kdt4-1-506106` | `gcp-cicd` |
+| `gcp-dr` | 같은 GCS | `gcp-dr` |
+| `gcp-addons` | 같은 GCS | `gcp-addons` |
 
 S3 backend는 versioning, encryption, public access block과 native lockfile을 사용한다. GCS도
 versioning을 켠다. state, plan, `.terraform/`, private key는 Git에서 제외하고 provider lock
@@ -63,7 +67,17 @@ GitOps 저장소를 pull해 배포한다.
 - 앱 CI service account와 GAR writer 권한
 - Artifact Registry/IAM/STS 관련 API 활성화
 
-이 stack은 이미지의 DR 사전 적재만 담당한다. Cloud SQL/DMS/GKE/Cloud DNS는 포함하지 않는다.
+이 stack은 이미지의 DR 사전 적재만 담당한다. Cloud SQL/DMS/Cloud DNS는 포함하지 않는다.
+
+## `gcp-dr`와 `gcp-addons`
+
+- `gcp-dr`: regional GKE, private node, pilot node pool 1대, VPC/subnet/router/NAT,
+  Secret Manager 컨테이너, GKE Workload Identity, DR/Terraform OIDC service account
+- `gcp-addons`: GCP GKE 내부 Argo CD와 External Secrets Operator
+
+실제 적용 후 GKE node 1대 Ready, Argo CD와 External Secrets의 모든 Pod Running,
+Application `Synced / Healthy`, 업무 replicas 0을 확인했다. Cloud SQL과 DMS는 이 state에
+포함하지 않는다.
 
 ## Terraform 밖에서 관리되는 현재 리소스
 
@@ -73,14 +87,13 @@ GitOps 저장소를 pull해 배포한다.
 - GCP Cloud SQL PostgreSQL read replica와 Google DMS migration job
 - DB schema, DB role/password, 초기 데모 데이터
 - GitHub repository, Environment reviewer, Actions variables/secrets
-- 아직 만들지 않은 GKE와 GCP-side Argo CD/External Secrets
 
 따라서 `scripts/destroy-lab.ps1`은 DMS PoC DB를 함께 지우지 않는다.
 
 ## GitHub Actions의 IaC 제어
 
-- PR: 세 stack 모두 `fmt -check`, `init -backend=false`, `validate`
-- 수동 `plan`: `aws-infra` 또는 `aws-addons`, GitHub OIDC로 read/plan
+- PR: 다섯 stack 모두 `fmt -check`, `init -backend=false`, `validate`
+- 수동 `plan`: AWS/GCP 네 운영 stack, 공급자별 GitHub OIDC로 read/plan
 - 수동 `apply`: `infrastructure-production` Environment 승인 뒤 새 plan 파일을 만들고 그
   파일만 apply
 - 앱 CI와 Terraform workflow는 서로 다른 IAM role 사용

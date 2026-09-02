@@ -280,8 +280,10 @@ resource "google_project_iam_member" "terraform" {
   member  = "serviceAccount:${google_service_account.terraform.email}"
 }
 
-resource "google_storage_bucket_iam_member" "terraform_state" {
-  bucket = "phase1-cicd-tfstate-kdt4-1-506106"
-  role   = "roles/storage.objectAdmin"
-  member = "serviceAccount:${google_service_account.terraform.email}"
+removed {
+  from = google_storage_bucket_iam_member.terraform_state
+
+  lifecycle {
+    destroy = false
+  }
 }

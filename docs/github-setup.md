@@ -27,10 +27,20 @@ PAT를 사용합니다. 이는 클라우드 자격 증명이 아니며 실습 �
 |---|---|
 | `AWS_REGION` | `ap-northeast-2` |
 | `AWS_TERRAFORM_ROLE_ARN` | Terraform의 `github_terraform_role_arn` 출력 |
+| `GCP_WIF_PROVIDER` | GitHub WIF provider 전체 이름 |
+| `GCP_TERRAFORM_SERVICE_ACCOUNT` | `github-bank-terraform@kdt4-1-506106.iam.gserviceaccount.com` |
+| `GCP_DR_SERVICE_ACCOUNT` | `github-bank-dr-control@kdt4-1-506106.iam.gserviceaccount.com` |
+| `GKE_CLUSTER` | `phase1-bank-gke` |
+| `GKE_NODE_POOL` | `pilot-light` |
+| `GKE_FAILOVER_NODES` | `3` |
+| `DR_DB_BOOTSTRAP_READY` | DB 삭제 상태에서는 `false` |
+
 `infrastructure-production` Environment를 만들고 apply 전에 reviewer 승인을 요구합니다.
-PR은 AWS/GCP Terraform format/validate를 자동 수행합니다. 원격 plan/apply는 AWS 두 스택만
-workflow dispatch로 실행합니다. GCP 인프라 관리자 역할은 GitHub에 부여하지 않고 최초
-GAR/WIF 생성은 관리자가 수행합니다.
+`gcp-dr-approval`과 `gcp-traffic-cutover`에도 reviewer를 둡니다. PR은 다섯 Terraform root의
+format/validate를 수행하고, 원격 plan/apply는 AWS/GCP stack을 OIDC로 실행합니다.
+
+DB를 다시 만든 뒤에만 `GCP_MIGRATION_JOB`, `GCP_CLOUD_SQL_INSTANCE`를 등록합니다. schema,
+role/grant, Secret Manager와 접속을 검증한 다음 `DR_DB_BOOTSTRAP_READY=true`로 바꿉니다.
 
 ## 키를 저장하지 않는 이유
 
