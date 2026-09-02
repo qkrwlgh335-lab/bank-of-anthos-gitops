@@ -12,22 +12,22 @@ resources:
 images:
   - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/frontend
     newName: 558807819624.dkr.ecr.ap-northeast-2.amazonaws.com/bank-app/frontend
-    newTag: sha-a5a94e243a17b51161229d7be85787d6e8f472c5
+    newTag: sha-074b9db2e20624f159595ce4308fcf285c4ea3a9
   - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/userservice
     newName: 558807819624.dkr.ecr.ap-northeast-2.amazonaws.com/bank-app/userservice
-    newTag: sha-a5a94e243a17b51161229d7be85787d6e8f472c5
+    newTag: sha-074b9db2e20624f159595ce4308fcf285c4ea3a9
   - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/contacts
     newName: 558807819624.dkr.ecr.ap-northeast-2.amazonaws.com/bank-app/contacts
-    newTag: sha-a5a94e243a17b51161229d7be85787d6e8f472c5
+    newTag: sha-074b9db2e20624f159595ce4308fcf285c4ea3a9
   - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/balancereader
     newName: 558807819624.dkr.ecr.ap-northeast-2.amazonaws.com/bank-app/balancereader
-    newTag: sha-a5a94e243a17b51161229d7be85787d6e8f472c5
+    newTag: sha-074b9db2e20624f159595ce4308fcf285c4ea3a9
   - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/ledgerwriter
     newName: 558807819624.dkr.ecr.ap-northeast-2.amazonaws.com/bank-app/ledgerwriter
-    newTag: sha-a5a94e243a17b51161229d7be85787d6e8f472c5
+    newTag: sha-074b9db2e20624f159595ce4308fcf285c4ea3a9
   - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/transactionhistory
     newName: 558807819624.dkr.ecr.ap-northeast-2.amazonaws.com/bank-app/transactionhistory
-    newTag: sha-a5a94e243a17b51161229d7be85787d6e8f472c5
+    newTag: sha-074b9db2e20624f159595ce4308fcf285c4ea3a9
 
 patches:
   - target:
