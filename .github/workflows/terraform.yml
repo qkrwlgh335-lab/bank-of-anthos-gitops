@@ -14,6 +14,7 @@ on:
           - aws-addons
           - gcp-dr
           - gcp-addons
+          - dr-data
       action:
         description: Plan or apply
         required: true
@@ -32,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        stack: [aws-infra, aws-addons, gcp-cicd, gcp-dr, gcp-addons]
+        stack: [aws-infra, aws-addons, gcp-cicd, gcp-dr, gcp-addons, dr-data]
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
@@ -53,14 +54,14 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
 
       - name: Configure AWS credentials through GitHub OIDC
-        if: startsWith(inputs.stack, 'aws-')
+        if: startsWith(inputs.stack, 'aws-') || inputs.stack == 'dr-data'
         uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ vars.AWS_TERRAFORM_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Authenticate to Google Cloud through WIF
-        if: startsWith(inputs.stack, 'gcp-')
+        if: startsWith(inputs.stack, 'gcp-') || inputs.stack == 'dr-data'
         uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
@@ -83,14 +84,14 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
 
       - name: Configure AWS credentials through GitHub OIDC
-        if: startsWith(inputs.stack, 'aws-')
+        if: startsWith(inputs.stack, 'aws-') || inputs.stack == 'dr-data'
         uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ vars.AWS_TERRAFORM_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Authenticate to Google Cloud through WIF
-        if: startsWith(inputs.stack, 'gcp-')
+        if: startsWith(inputs.stack, 'gcp-') || inputs.stack == 'dr-data'
         uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}

@@ -21,11 +21,15 @@ locals {
     "roles/stackdriver.resourceMetadata.writer",
   ])
   terraform_roles = toset([
+    "roles/cloudsql.admin",
     "roles/compute.networkAdmin",
+    "roles/compute.securityAdmin",
     "roles/container.admin",
+    "roles/datamigration.admin",
     "roles/iam.serviceAccountAdmin",
     "roles/resourcemanager.projectIamAdmin",
     "roles/secretmanager.admin",
+    "roles/servicenetworking.networksAdmin",
     "roles/serviceusage.serviceUsageAdmin",
   ])
   dr_control_roles = toset([
@@ -75,6 +79,17 @@ resource "google_compute_router" "dr" {
   name    = "phase1-bank-dr-router"
   region  = var.region
   network = google_compute_network.dr.id
+
+  bgp {
+    asn               = 64514
+    advertise_mode    = "CUSTOM"
+    advertised_groups = ["ALL_SUBNETS"]
+
+    advertised_ip_ranges {
+      range       = "10.53.0.0/24"
+      description = "Cloud SQL private service range advertised to AWS over HA VPN"
+    }
+  }
 }
 
 resource "google_compute_router_nat" "dr" {

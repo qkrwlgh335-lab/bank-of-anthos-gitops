@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dr-cdc-runner
+  labels:
+    app: dr-cdc-runner
+spec:
+  restartPolicy: Never
+  containers:
+    - name: postgres
+      image: postgres:16.14-alpine
+      envFrom:
+        - secretRef:
+            name: db-probe
+      command: ["/bin/sh", "-ec"]
+      args: ["sleep 3600"]

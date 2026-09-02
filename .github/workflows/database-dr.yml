@@ -1,0 +1,423 @@
+name: Database DR bootstrap and CDC validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Approved database operation
+        required: true
+        type: choice
+        options:
+          - bootstrap-source
+          - create-dms
+          - validate-cdc
+          - readiness
+      change_id:
+        description: Change, exercise, or incident identifier
+        required: true
+        type: string
+      confirmation:
+        description: Enter APPLY-DB-DR for bootstrap/create, or TEST-CDC for validation
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: phase1-database-dr
+  cancel-in-progress: false
+
+env:
+  AWS_ACCOUNT_ID: "558807819624"
+  AWS_REGION: ap-northeast-2
+  RDS_INSTANCE: phase1-bank-postgres
+  EKS_CLUSTER: phase1-bank-eks
+  GCP_PROJECT_ID: kdt4-1-506106
+  GCP_REGION: asia-northeast3
+  GCP_NETWORK: phase1-bank-dr-vpc
+  CLOUD_SQL_INSTANCE: phase1-bank-dr-postgres
+  GKE_CLUSTER: phase1-bank-gke
+  DMS_SOURCE_PROFILE: phase1-bank-rds-source
+  DMS_DESTINATION_PROFILE: phase1-bank-cloudsql-destination
+  DMS_MIGRATION_JOB: phase1-bank-rds-to-cloudsql
+  POSTGRES_IMAGE: postgres:16.14-alpine
+
+jobs:
+  database-dr:
+    name: ${{ inputs.mode }} / approved
+    runs-on: ubuntu-latest
+    environment: infrastructure-production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate explicit operator intent
+        env:
+          MODE: ${{ inputs.mode }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -Eeuo pipefail
+          if [[ "$MODE" == "bootstrap-source" || "$MODE" == "create-dms" ]]; then
+            [[ "$CONFIRMATION" == "APPLY-DB-DR" ]] || { echo "Enter APPLY-DB-DR"; exit 1; }
+          elif [[ "$MODE" == "validate-cdc" ]]; then
+            [[ "$CONFIRMATION" == "TEST-CDC" ]] || { echo "Enter TEST-CDC"; exit 1; }
+          fi
+
+      - name: Configure AWS credentials through GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Authenticate to Google Cloud through WIF
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_TERRAFORM_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: Verify account, private endpoints, engine versions, and VPN inventory
+        id: inventory
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          account=$(aws sts get-caller-identity --query Account --output text)
+          [[ "$account" == "$AWS_ACCOUNT_ID" ]] || { echo "Wrong AWS account: $account"; exit 1; }
+
+          rds=$(aws rds describe-db-instances --db-instance-identifier "$RDS_INSTANCE" --output json)
+          [[ "$(jq -r '.DBInstances[0].Engine' <<<"$rds")" == "postgres" ]]
+          [[ "$(jq -r '.DBInstances[0].EngineVersion' <<<"$rds")" == 16.* ]]
+          [[ "$(jq -r '.DBInstances[0].PubliclyAccessible' <<<"$rds")" == "false" ]]
+          [[ "$(jq -r '.DBInstances[0].MultiAZ' <<<"$rds")" == "true" ]]
+          [[ "$(jq -r '.DBInstances[0].DBInstanceStatus' <<<"$rds")" == "available" ]]
+          rds_host=$(jq -r '.DBInstances[0].Endpoint.Address' <<<"$rds")
+          echo "rds_host=$rds_host" >> "$GITHUB_OUTPUT"
+
+          sql=$(gcloud sql instances describe "$CLOUD_SQL_INSTANCE" --project "$GCP_PROJECT_ID" --format=json)
+          [[ "$(jq -r '.databaseVersion' <<<"$sql")" == "POSTGRES_16" ]]
+          [[ "$(jq -r '.settings.ipConfiguration.ipv4Enabled' <<<"$sql")" == "false" ]]
+          [[ "$(jq -r '.state' <<<"$sql")" == "RUNNABLE" ]]
+          sql_ip=$(jq -r '.ipAddresses[] | select(.type == "PRIVATE") | .ipAddress' <<<"$sql")
+          [[ -n "$sql_ip" ]]
+          echo "cloudsql_ip=$sql_ip" >> "$GITHUB_OUTPUT"
+
+          vpn_count=$(aws ec2 describe-vpn-connections \
+            --filters Name=tag:Scope,Values=dr-data Name=state,Values=available \
+            --query 'length(VpnConnections)' --output text)
+
+          {
+            echo "### Private database inventory"
+            echo "- Change: ${{ inputs.change_id }}"
+            echo "- AWS account: $account"
+            echo "- RDS: PostgreSQL $(jq -r '.DBInstances[0].EngineVersion' <<<"$rds"), private, Multi-AZ"
+            echo "- Cloud SQL: POSTGRES_16, private, pilot-light"
+            echo "- AWS Site-to-Site VPN connections: $vpn_count"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Bootstrap Bank of Anthos source schema and credentials
+        if: inputs.mode == 'bootstrap-source'
+        shell: bash
+        env:
+          RDS_HOST: ${{ steps.inventory.outputs.rds_host }}
+        run: |
+          set -Eeuo pipefail
+          aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION" \
+            --kubeconfig "$RUNNER_TEMP/aws-kubeconfig" >/dev/null
+          export KUBECONFIG="$RUNNER_TEMP/aws-kubeconfig"
+
+          master_arn=$(aws rds describe-db-instances --db-instance-identifier "$RDS_INSTANCE" \
+            --query 'DBInstances[0].MasterUserSecret.SecretArn' --output text)
+          master_json=$(aws secretsmanager get-secret-value --secret-id "$master_arn" \
+            --query SecretString --output text)
+          master_user=$(jq -r '.username' <<<"$master_json")
+          master_password=$(jq -r '.password' <<<"$master_json")
+          echo "::add-mask::$master_password"
+
+          app_json=$(aws secretsmanager get-secret-value --secret-id phase1/bank-db/app \
+            --query SecretString --output text 2>/dev/null || true)
+          if [[ -n "$app_json" && "$app_json" != "None" ]]; then
+            accounts_password=$(jq -r '.accounts_password' <<<"$app_json")
+            ledger_password=$(jq -r '.ledger_password' <<<"$app_json")
+          else
+            accounts_password=$(openssl rand -hex 24)
+            ledger_password=$(openssl rand -hex 24)
+          fi
+          echo "::add-mask::$accounts_password"
+          echo "::add-mask::$ledger_password"
+
+          dms_json=$(aws secretsmanager get-secret-value --secret-id phase1/bank-db/dms \
+            --query SecretString --output text 2>/dev/null || true)
+          if [[ -n "$dms_json" && "$dms_json" != "None" ]]; then
+            dms_password=$(jq -r '.password' <<<"$dms_json")
+          else
+            dms_password=$(openssl rand -hex 24)
+          fi
+          echo "::add-mask::$dms_password"
+
+          app_json=$(jq -cn \
+            --arg host "$RDS_HOST" --arg ap "$accounts_password" --arg lp "$ledger_password" \
+            '{host:$host,port:5432,accounts_database:"accounts-db",accounts_username:"accounts_admin",accounts_password:$ap,ledger_database:"ledger-db",ledger_username:"ledger_admin",ledger_password:$lp}')
+          dms_json=$(jq -cn \
+            --arg host "$RDS_HOST" --arg password "$dms_password" \
+            '{host:$host,port:5432,username:"dms_user",password:$password}')
+
+          aws secretsmanager put-secret-value --secret-id phase1/bank-db/app \
+            --secret-string "$app_json" >/dev/null
+          aws secretsmanager put-secret-value --secret-id phase1/bank-db/dms \
+            --secret-string "$dms_json" >/dev/null
+
+          kubectl create namespace bank-db-admin --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+          kubectl -n bank-db-admin create secret generic rds-bootstrap \
+            --from-literal=PGHOST="$RDS_HOST" --from-literal=PGPORT=5432 \
+            --from-literal=PGUSER="$master_user" --from-literal=PGPASSWORD="$master_password" \
+            --from-literal=PGSSLMODE=require \
+            --from-literal=ACCOUNTS_PASSWORD="$accounts_password" \
+            --from-literal=LEDGER_PASSWORD="$ledger_password" \
+            --from-literal=DMS_PASSWORD="$dms_password" \
+            --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+          kubectl -n bank-db-admin create configmap bank-db-bootstrap-sql \
+            --from-file=database/bootstrap/00-admin.sql \
+            --from-file=database/bootstrap/01-dms-grants.sql \
+            --from-file=database/bootstrap/02-cdc-probe.sql \
+            --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+          kubectl -n bank-db-admin create configmap bank-db-schema \
+            --from-file=database/schema/accounts.sql \
+            --from-file=database/schema/ledger.sql \
+            --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+          kubectl -n bank-db-admin delete job bank-db-bootstrap --ignore-not-found >/dev/null
+          kubectl apply -f database/kubernetes/bootstrap-rds.yaml >/dev/null
+          kubectl -n bank-db-admin wait job/bank-db-bootstrap \
+            --for=condition=Complete --timeout=15m
+          kubectl -n bank-db-admin logs job/bank-db-bootstrap
+          kubectl -n bank-db-admin delete secret rds-bootstrap >/dev/null
+
+          runtime_json=$(jq -cn \
+            --arg accounts "postgresql://accounts_admin:${accounts_password}@${RDS_HOST}:5432/accounts-db?sslmode=require" \
+            --arg ledger_url "jdbc:postgresql://${RDS_HOST}:5432/ledger-db?sslmode=require" \
+            --arg ledger_password "$ledger_password" \
+            '{ACCOUNTS_DB_URI:$accounts,SPRING_DATASOURCE_URL:$ledger_url,SPRING_DATASOURCE_USERNAME:"ledger_admin",SPRING_DATASOURCE_PASSWORD:$ledger_password,REDIS_URL:"redis://redis:6379/0"}')
+          aws secretsmanager put-secret-value --secret-id phase1/bank-app/runtime \
+            --secret-string "$runtime_json" >/dev/null
+
+          printf '%s' "$dms_json" | gcloud secrets versions add phase1-bank-dms-source \
+            --project "$GCP_PROJECT_ID" --data-file=- >/dev/null
+
+          cloudsql_password=$(gcloud secrets versions access latest \
+            --secret phase1-bank-cloudsql-admin --project "$GCP_PROJECT_ID" 2>/dev/null || true)
+          if [[ -z "$cloudsql_password" ]]; then
+            cloudsql_password=$(openssl rand -hex 24)
+            printf '%s' "$cloudsql_password" | gcloud secrets versions add phase1-bank-cloudsql-admin \
+              --project "$GCP_PROJECT_ID" --data-file=- >/dev/null
+          fi
+          echo "::add-mask::$cloudsql_password"
+          gcloud sql users set-password postgres --instance "$CLOUD_SQL_INSTANCE" \
+            --project "$GCP_PROJECT_ID" --password "$cloudsql_password" --quiet
+
+          cloudsql_ip='${{ steps.inventory.outputs.cloudsql_ip }}'
+          gcp_runtime=$(jq -cn \
+            --arg accounts "postgresql://accounts_admin:${accounts_password}@${cloudsql_ip}:5432/accounts-db?sslmode=require" \
+            --arg ledger_url "jdbc:postgresql://${cloudsql_ip}:5432/ledger-db?sslmode=require" \
+            --arg ledger_password "$ledger_password" \
+            '{ACCOUNTS_DB_URI:$accounts,SPRING_DATASOURCE_URL:$ledger_url,SPRING_DATASOURCE_USERNAME:"ledger_admin",SPRING_DATASOURCE_PASSWORD:$ledger_password,REDIS_URL:"redis://redis:6379/0"}')
+          printf '%s' "$gcp_runtime" | gcloud secrets versions add phase1-bank-app-runtime \
+            --project "$GCP_PROJECT_ID" --data-file=- >/dev/null
+
+          echo "- Source schema: official Bank of Anthos accounts/ledger plus a PK-based CDC probe" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Credentials: generated and stored only in AWS/GCP secret managers" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create, verify, and start continuous DMS migration
+        if: inputs.mode == 'create-dms'
+        shell: bash
+        env:
+          RDS_HOST: ${{ steps.inventory.outputs.rds_host }}
+        run: |
+          set -Eeuo pipefail
+          dms_json=$(aws secretsmanager get-secret-value --secret-id phase1/bank-db/dms \
+            --query SecretString --output text)
+          dms_user=$(jq -r '.username' <<<"$dms_json")
+          dms_password=$(jq -r '.password' <<<"$dms_json")
+          echo "::add-mask::$dms_password"
+
+          up_tunnels=$(aws ec2 describe-vpn-connections \
+            --filters Name=tag:Scope,Values=dr-data \
+            --query 'length(VpnConnections[].VgwTelemetry[?Status==`UP`][])' --output text)
+          [[ "$up_tunnels" -ge 2 ]] || { echo "Fewer than two AWS VPN tunnels are UP: $up_tunnels"; exit 1; }
+
+          if ! gcloud database-migration connection-profiles describe "$DMS_SOURCE_PROFILE" \
+            --region "$GCP_REGION" --project "$GCP_PROJECT_ID" >/dev/null 2>&1; then
+            gcloud database-migration connection-profiles create postgresql "$DMS_SOURCE_PROFILE" \
+              --region "$GCP_REGION" --project "$GCP_PROJECT_ID" --no-async \
+              --display-name="Phase 1 private RDS PostgreSQL source" --role=SOURCE \
+              --host="$RDS_HOST" --port=5432 --username="$dms_user" --password="$dms_password" \
+              --ssl-type=REQUIRED
+          fi
+
+          if ! gcloud database-migration connection-profiles describe "$DMS_DESTINATION_PROFILE" \
+            --region "$GCP_REGION" --project "$GCP_PROJECT_ID" >/dev/null 2>&1; then
+            gcloud database-migration connection-profiles create postgresql "$DMS_DESTINATION_PROFILE" \
+              --region "$GCP_REGION" --project "$GCP_PROJECT_ID" --no-async \
+              --display-name="Phase 1 private Cloud SQL PostgreSQL destination" --role=DESTINATION \
+              --cloudsql-instance="$CLOUD_SQL_INSTANCE"
+          fi
+
+          if ! gcloud database-migration migration-jobs describe "$DMS_MIGRATION_JOB" \
+            --region "$GCP_REGION" --project "$GCP_PROJECT_ID" >/dev/null 2>&1; then
+            gcloud database-migration migration-jobs create "$DMS_MIGRATION_JOB" \
+              --region "$GCP_REGION" --project "$GCP_PROJECT_ID" --no-async \
+              --display-name="Bank of Anthos AWS to GCP continuous DR" \
+              --type=CONTINUOUS --source="$DMS_SOURCE_PROFILE" \
+              --destination="$DMS_DESTINATION_PROFILE" \
+              --peer-vpc="projects/${GCP_PROJECT_ID}/global/networks/${GCP_NETWORK}" \
+              --databases-filter=accounts-db,ledger-db \
+              --dump-parallel-level=MIN
+          fi
+
+          gcloud database-migration migration-jobs verify "$DMS_MIGRATION_JOB" \
+            --region "$GCP_REGION" --project "$GCP_PROJECT_ID" --quiet
+          state=$(gcloud database-migration migration-jobs describe "$DMS_MIGRATION_JOB" \
+            --region "$GCP_REGION" --project "$GCP_PROJECT_ID" --format='value(state)')
+          if [[ "$state" == "DRAFT" || "$state" == "NOT_STARTED" || "$state" == "STOPPED" ]]; then
+            gcloud database-migration migration-jobs start "$DMS_MIGRATION_JOB" \
+              --region "$GCP_REGION" --project "$GCP_PROJECT_ID" --quiet
+          fi
+
+          for attempt in {1..60}; do
+            read -r state phase < <(gcloud database-migration migration-jobs describe "$DMS_MIGRATION_JOB" \
+              --region "$GCP_REGION" --project "$GCP_PROJECT_ID" --format='value(state,phase)')
+            echo "DMS attempt=$attempt state=$state phase=$phase"
+            [[ "$state" == "RUNNING" && "$phase" == "CDC" ]] && break
+            [[ "$state" == "FAILED" ]] && exit 1
+            sleep 30
+          done
+          [[ "$state" == "RUNNING" && "$phase" == "CDC" ]] || { echo "DMS did not reach RUNNING/CDC"; exit 1; }
+          echo "- DMS: $state / $phase" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Databases: accounts-db, ledger-db" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Validate INSERT, UPDATE, and DELETE through CDC
+        if: inputs.mode == 'validate-cdc'
+        shell: bash
+        env:
+          RDS_HOST: ${{ steps.inventory.outputs.rds_host }}
+          CLOUDSQL_IP: ${{ steps.inventory.outputs.cloudsql_ip }}
+        run: |
+          set -Eeuo pipefail
+          app_json=$(aws secretsmanager get-secret-value --secret-id phase1/bank-db/app \
+            --query SecretString --output text)
+          accounts_password=$(jq -r '.accounts_password' <<<"$app_json")
+          cloudsql_password=$(gcloud secrets versions access latest \
+            --secret phase1-bank-cloudsql-admin --project "$GCP_PROJECT_ID")
+          echo "::add-mask::$accounts_password"
+          echo "::add-mask::$cloudsql_password"
+
+          aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION" \
+            --kubeconfig "$RUNNER_TEMP/aws-kubeconfig" >/dev/null
+          KUBECONFIG="$RUNNER_TEMP/gcp-kubeconfig" gcloud container clusters get-credentials \
+            "$GKE_CLUSTER" --region "$GCP_REGION" --project "$GCP_PROJECT_ID" >/dev/null
+
+          for kubeconfig in "$RUNNER_TEMP/aws-kubeconfig" "$RUNNER_TEMP/gcp-kubeconfig"; do
+            kubectl --kubeconfig "$kubeconfig" create namespace dr-cdc-validation \
+              --dry-run=client -o yaml | kubectl --kubeconfig "$kubeconfig" apply -f - >/dev/null
+          done
+          kubectl --kubeconfig "$RUNNER_TEMP/aws-kubeconfig" -n dr-cdc-validation \
+            create secret generic db-probe --from-literal=PGHOST="$RDS_HOST" \
+            --from-literal=PGPORT=5432 --from-literal=PGDATABASE=accounts-db \
+            --from-literal=PGUSER=accounts_admin --from-literal=PGPASSWORD="$accounts_password" \
+            --from-literal=PGSSLMODE=require --dry-run=client -o yaml | \
+            kubectl --kubeconfig "$RUNNER_TEMP/aws-kubeconfig" apply -f - >/dev/null
+          kubectl --kubeconfig "$RUNNER_TEMP/gcp-kubeconfig" -n dr-cdc-validation \
+            create secret generic db-probe --from-literal=PGHOST="$CLOUDSQL_IP" \
+            --from-literal=PGPORT=5432 --from-literal=PGDATABASE=accounts-db \
+            --from-literal=PGUSER=postgres --from-literal=PGPASSWORD="$cloudsql_password" \
+            --from-literal=PGSSLMODE=require --dry-run=client -o yaml | \
+            kubectl --kubeconfig "$RUNNER_TEMP/gcp-kubeconfig" apply -f - >/dev/null
+
+          for kubeconfig in "$RUNNER_TEMP/aws-kubeconfig" "$RUNNER_TEMP/gcp-kubeconfig"; do
+            kubectl --kubeconfig "$kubeconfig" -n dr-cdc-validation delete pod dr-cdc-runner \
+              --ignore-not-found >/dev/null
+            kubectl --kubeconfig "$kubeconfig" -n dr-cdc-validation apply \
+              -f database/kubernetes/psql-runner.yaml >/dev/null
+            kubectl --kubeconfig "$kubeconfig" -n dr-cdc-validation wait pod/dr-cdc-runner \
+              --for=condition=Ready --timeout=5m
+          done
+
+          source_sql() {
+            kubectl --kubeconfig "$RUNNER_TEMP/aws-kubeconfig" -n dr-cdc-validation \
+              exec dr-cdc-runner -- psql -v ON_ERROR_STOP=1 -c "$1" >/dev/null
+          }
+          destination_value() {
+            kubectl --kubeconfig "$RUNNER_TEMP/gcp-kubeconfig" -n dr-cdc-validation \
+              exec dr-cdc-runner -- psql -At -v ON_ERROR_STOP=1 -c "$1" 2>/dev/null
+          }
+          wait_for_value() {
+            local expected="$1" query="$2" value=""
+            for attempt in {1..60}; do
+              value=$(destination_value "$query" || true)
+              [[ "$value" == "$expected" ]] && { echo "$value"; return 0; }
+              sleep 5
+            done
+            echo "Expected '$expected', received '$value'" >&2
+            return 1
+          }
+
+          source_sql "DELETE FROM dr_cdc_probe WHERE id = 20260902"
+          wait_for_value "0" "SELECT count(*) FROM dr_cdc_probe WHERE id = 20260902" >/dev/null
+
+          insert_start=$(date -u +%FT%TZ)
+          source_sql "INSERT INTO dr_cdc_probe(id,payload) VALUES (20260902,'inserted')"
+          inserted=$(wait_for_value "inserted" "SELECT payload FROM dr_cdc_probe WHERE id = 20260902")
+          insert_end=$(date -u +%FT%TZ)
+
+          update_start=$(date -u +%FT%TZ)
+          source_sql "UPDATE dr_cdc_probe SET payload='updated',updated_at=CURRENT_TIMESTAMP WHERE id=20260902"
+          updated=$(wait_for_value "updated" "SELECT payload FROM dr_cdc_probe WHERE id = 20260902")
+          update_end=$(date -u +%FT%TZ)
+
+          delete_start=$(date -u +%FT%TZ)
+          source_sql "DELETE FROM dr_cdc_probe WHERE id = 20260902"
+          deleted=$(wait_for_value "0" "SELECT count(*) FROM dr_cdc_probe WHERE id = 20260902")
+          delete_end=$(date -u +%FT%TZ)
+
+          read -r state phase < <(gcloud database-migration migration-jobs describe "$DMS_MIGRATION_JOB" \
+            --region "$GCP_REGION" --project "$GCP_PROJECT_ID" --format='value(state,phase)')
+          [[ "$state" == "RUNNING" && "$phase" == "CDC" ]]
+
+          {
+            echo "### PostgreSQL 16 private CDC validation"
+            echo "- Change: ${{ inputs.change_id }}"
+            echo "- DMS: $state / $phase"
+            echo "- INSERT: $inserted ($insert_start → $insert_end)"
+            echo "- UPDATE: $updated ($update_start → $update_end)"
+            echo "- DELETE remaining rows: $deleted ($delete_start → $delete_end)"
+            echo "- Test table: accounts-db.public.dr_cdc_probe (primary key present)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report current database DR readiness
+        if: inputs.mode == 'readiness'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          read -r state phase < <(gcloud database-migration migration-jobs describe "$DMS_MIGRATION_JOB" \
+            --region "$GCP_REGION" --project "$GCP_PROJECT_ID" --format='value(state,phase)')
+          read -r sql_type sql_state < <(gcloud sql instances describe "$CLOUD_SQL_INSTANCE" \
+            --project "$GCP_PROJECT_ID" --format='value(instanceType,state)')
+          up_tunnels=$(aws ec2 describe-vpn-connections --filters Name=tag:Scope,Values=dr-data \
+            --query 'length(VpnConnections[].VgwTelemetry[?Status==`UP`][])' --output text)
+          {
+            echo "### Database DR readiness"
+            echo "- DMS: $state / $phase"
+            echo "- Cloud SQL: $sql_type / $sql_state"
+            echo "- AWS VPN tunnels UP: $up_tunnels / 4"
+            echo "- Promotion: deliberately not executed by this workflow"
+            echo "- DNS: out of scope"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clean up temporary CDC clients
+        if: always() && inputs.mode == 'validate-cdc'
+        shell: bash
+        run: |
+          kubectl --kubeconfig "$RUNNER_TEMP/aws-kubeconfig" delete namespace dr-cdc-validation \
+            --ignore-not-found --wait=false || true
+          kubectl --kubeconfig "$RUNNER_TEMP/gcp-kubeconfig" delete namespace dr-cdc-validation \
+            --ignore-not-found --wait=false || true

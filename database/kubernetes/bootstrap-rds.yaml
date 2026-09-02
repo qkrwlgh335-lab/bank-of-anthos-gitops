@@ -1,0 +1,68 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bank-db-bootstrap
+  namespace: bank-db-admin
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: bank-db-bootstrap
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: postgres
+          image: postgres:16.14-alpine
+          envFrom:
+            - secretRef:
+                name: rds-bootstrap
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              echo "RDS PostgreSQL version: $(psql -d postgres -Atc 'SHOW server_version')"
+              psql -d postgres \
+                -v accounts_user=accounts_admin -v accounts_password="$ACCOUNTS_PASSWORD" \
+                -v ledger_user=ledger_admin -v ledger_password="$LEDGER_PASSWORD" \
+                -v dms_user=dms_user -v dms_password="$DMS_PASSWORD" \
+                -v accounts_db=accounts-db -v ledger_db=ledger-db \
+                -f /bootstrap/00-admin.sql
+
+              for database in postgres accounts-db ledger-db; do
+                psql -d "$database" -v ON_ERROR_STOP=1 \
+                  -c 'CREATE EXTENSION IF NOT EXISTS pglogical'
+              done
+
+              if [ "$(psql -d accounts-db -Atc "SELECT to_regclass('public.users') IS NOT NULL")" != "t" ]; then
+                PGPASSWORD="$ACCOUNTS_PASSWORD" psql -d accounts-db -U accounts_admin \
+                  -v ON_ERROR_STOP=1 -f /schema/accounts.sql
+              fi
+              if [ "$(psql -d ledger-db -Atc "SELECT to_regclass('public.transactions') IS NOT NULL")" != "t" ]; then
+                PGPASSWORD="$LEDGER_PASSWORD" psql -d ledger-db -U ledger_admin \
+                  -v ON_ERROR_STOP=1 -f /schema/ledger.sql
+              fi
+
+              PGPASSWORD="$ACCOUNTS_PASSWORD" psql -d accounts-db -U accounts_admin \
+                -v ON_ERROR_STOP=1 -f /bootstrap/02-cdc-probe.sql
+
+              for database in postgres accounts-db ledger-db; do
+                psql -d "$database" -v dms_user=dms_user \
+                  -f /bootstrap/01-dms-grants.sql
+              done
+
+              echo "BOOTSTRAP_OK databases=accounts-db,ledger-db pglogical=3 probe_rows=$(psql -d accounts-db -Atc 'SELECT count(*) FROM dr_cdc_probe')"
+          volumeMounts:
+            - name: bootstrap
+              mountPath: /bootstrap
+              readOnly: true
+            - name: schema
+              mountPath: /schema
+              readOnly: true
+      volumes:
+        - name: bootstrap
+          configMap:
+            name: bank-db-bootstrap-sql
+        - name: schema
+          configMap:
+            name: bank-db-schema

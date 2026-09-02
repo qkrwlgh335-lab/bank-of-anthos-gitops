@@ -6,5 +6,6 @@ crash.log
 *.pem
 *.key
 .runtime/
+.tools/
 __pycache__/
 *.py[cod]
