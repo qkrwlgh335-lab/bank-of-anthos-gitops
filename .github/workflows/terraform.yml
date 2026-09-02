@@ -22,12 +22,13 @@ on:
           - gcp-addons
           - dr-data
       action:
-        description: Create a plan only, or approve and apply the exact saved plan
+        description: Plan, apply, or destroy through one reviewed saved plan
         required: true
         type: choice
         options:
           - plan
           - apply
+          - destroy
 
 permissions:
   contents: read
@@ -49,6 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       changed: ${{ steps.detect.outputs.changed }}
+      deployments: ${{ steps.deployments.outputs.deployments }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -67,6 +69,15 @@ jobs:
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
+      - id: deployments
+        name: Discover versioned Terraform environments
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mapfile -t names < <(find terraform/environments -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+          [[ "${#names[@]}" -gt 0 ]] || { echo "No Terraform environment directories found"; exit 1; }
+          json=$(printf '%s\n' "${names[@]}" | jq -R . | jq -cs .)
+          echo "deployments=$json" >> "$GITHUB_OUTPUT"
 
   static-checks:
     name: Format and validate / ${{ matrix.stack }}
@@ -90,8 +101,12 @@ jobs:
       - name: Validate
         run: terraform -chdir=terraform/${{ matrix.stack }} validate
 
+      - name: Validate environment state and name isolation
+        if: matrix.stack == 'aws-infra'
+        run: python scripts/validate-environment-contract.py
+
   pull-request-plan:
-    name: PR plan / phase1 / ${{ matrix.stack }}
+    name: PR plan / ${{ matrix.deployment }} / ${{ matrix.stack }}
     if: github.event_name == 'pull_request' && needs.terraform-changes.outputs.changed == 'true'
     needs: [terraform-changes, static-checks]
     runs-on: ubuntu-latest
@@ -99,6 +114,7 @@ jobs:
       fail-fast: false
       matrix:
         stack: [aws-infra, aws-addons, gcp-cicd, gcp-dr, gcp-addons, dr-data]
+        deployment: ${{ fromJSON(needs.terraform-changes.outputs.deployments) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
@@ -120,23 +136,36 @@ jobs:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_TERRAFORM_SERVICE_ACCOUNT }}
 
+      - name: Set up Google Cloud CLI
+        if: startsWith(matrix.stack, 'gcp-') || matrix.stack == 'dr-data'
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
       - name: Verify environment files
         shell: bash
         env:
+          DEPLOYMENT: ${{ matrix.deployment }}
           STACK: ${{ matrix.stack }}
         run: |
-          test -f "terraform/environments/phase1/backend/${STACK}.hcl"
-          test -f "terraform/environments/phase1/${STACK}.tfvars"
+          test -f "terraform/environments/${DEPLOYMENT}/backend/${STACK}.hcl"
+          test -f "terraform/environments/${DEPLOYMENT}/${STACK}.tfvars"
+
+      - name: Check current CSP version and quota compatibility
+        env:
+          DEPLOYMENT: ${{ matrix.deployment }}
+          STACK: ${{ matrix.stack }}
+        run: bash scripts/preflight-platform-compatibility.sh "$STACK" "terraform/environments/${DEPLOYMENT}/${STACK}.tfvars"
 
       - name: Initialize selected stack
         env:
+          DEPLOYMENT: ${{ matrix.deployment }}
           STACK: ${{ matrix.stack }}
-        run: terraform -chdir=terraform/${STACK} init -reconfigure -backend-config="${GITHUB_WORKSPACE}/terraform/environments/phase1/backend/${STACK}.hcl"
+        run: terraform -chdir=terraform/${STACK} init -reconfigure -backend-config="${GITHUB_WORKSPACE}/terraform/environments/${DEPLOYMENT}/backend/${STACK}.hcl"
 
       - name: Create speculative plan
         env:
+          DEPLOYMENT: ${{ matrix.deployment }}
           STACK: ${{ matrix.stack }}
-        run: terraform -chdir=terraform/${STACK} plan -lock=false -lock-timeout=5m -var-file="${GITHUB_WORKSPACE}/terraform/environments/phase1/${STACK}.tfvars"
+        run: terraform -chdir=terraform/${STACK} plan -lock=false -lock-timeout=5m -var-file="${GITHUB_WORKSPACE}/terraform/environments/${DEPLOYMENT}/${STACK}.tfvars"
 
   dispatch-plan:
     name: ${{ inputs.deployment }} / ${{ inputs.stack }} / saved plan
@@ -176,17 +205,35 @@ jobs:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_TERRAFORM_SERVICE_ACCOUNT }}
 
+      - name: Set up Google Cloud CLI
+        if: startsWith(inputs.stack, 'gcp-') || inputs.stack == 'dr-data'
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
       - name: Initialize selected stack
         env:
           DEPLOYMENT: ${{ inputs.deployment }}
           STACK: ${{ inputs.stack }}
         run: terraform -chdir=terraform/${STACK} init -reconfigure -backend-config="${GITHUB_WORKSPACE}/terraform/environments/${DEPLOYMENT}/backend/${STACK}.hcl"
 
-      - name: Create saved plan
+      - name: Check current CSP version and quota compatibility
         env:
           DEPLOYMENT: ${{ inputs.deployment }}
           STACK: ${{ inputs.stack }}
-        run: terraform -chdir=terraform/${STACK} plan -lock-timeout=5m -var-file="${GITHUB_WORKSPACE}/terraform/environments/${DEPLOYMENT}/${STACK}.tfvars" -out=tfplan
+        run: bash scripts/preflight-platform-compatibility.sh "$STACK" "terraform/environments/${DEPLOYMENT}/${STACK}.tfvars"
+
+      - name: Create saved plan
+        shell: bash
+        env:
+          ACTION: ${{ inputs.action }}
+          DEPLOYMENT: ${{ inputs.deployment }}
+          STACK: ${{ inputs.stack }}
+        run: |
+          set -Eeuo pipefail
+          mode=()
+          [[ "$ACTION" == "destroy" ]] && mode=(-destroy)
+          terraform -chdir=terraform/${STACK} plan "${mode[@]}" -lock-timeout=5m \
+            -var-file="${GITHUB_WORKSPACE}/terraform/environments/${DEPLOYMENT}/${STACK}.tfvars" \
+            -out=tfplan
 
       - name: Show saved plan for reviewer
         env:
@@ -199,7 +246,7 @@ jobs:
         run: echo "artifact_name=tfplan-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Upload saved plan
-        if: inputs.action == 'apply'
+        if: inputs.action == 'apply' || inputs.action == 'destroy'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ steps.plan-metadata.outputs.artifact_name }}
@@ -209,10 +256,10 @@ jobs:
 
   approved-apply:
     name: ${{ inputs.deployment }} / ${{ inputs.stack }} / approved exact apply
-    if: github.event_name == 'workflow_dispatch' && inputs.action == 'apply'
+    if: github.event_name == 'workflow_dispatch' && (inputs.action == 'apply' || inputs.action == 'destroy')
     needs: dispatch-plan
     runs-on: ubuntu-latest
-    environment: infrastructure-production
+    environment: ${{ inputs.deployment == 'phase1' && 'infrastructure-production' || format('infrastructure-{0}', inputs.deployment) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -258,6 +305,32 @@ jobs:
         env:
           STACK: ${{ inputs.stack }}
         run: terraform -chdir=terraform/${STACK} apply -lock-timeout=5m -auto-approve tfplan
+
+      - name: Prove convergence after the approved operation
+        shell: bash
+        env:
+          ACTION: ${{ inputs.action }}
+          DEPLOYMENT: ${{ inputs.deployment }}
+          STACK: ${{ inputs.stack }}
+        run: |
+          set -Eeuo pipefail
+          mode=()
+          [[ "$ACTION" == "destroy" ]] && mode=(-destroy)
+          set +e
+          terraform -chdir=terraform/${STACK} plan "${mode[@]}" -detailed-exitcode \
+            -lock-timeout=5m \
+            -var-file="${GITHUB_WORKSPACE}/terraform/environments/${DEPLOYMENT}/${STACK}.tfvars"
+          result=$?
+          set -e
+          if [[ "$result" -eq 0 ]]; then
+            echo "Convergence verified: repeated ${ACTION} plan has no changes" >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "$result" -eq 2 ]]; then
+            echo "The approved operation completed but a repeated ${ACTION} plan still has changes" >&2
+            exit 1
+          else
+            echo "Convergence verification failed before a trustworthy result was produced" >&2
+            exit "$result"
+          fi
 
   terraform-required-gate:
     name: Terraform required gate

@@ -34,14 +34,12 @@ spec:
                   -c 'CREATE EXTENSION IF NOT EXISTS pglogical'
               done
 
-              if [ "$(psql -d accounts-db -Atc "SELECT to_regclass('public.users') IS NOT NULL")" != "t" ]; then
-                PGPASSWORD="$ACCOUNTS_PASSWORD" psql -d accounts-db -U accounts_admin \
-                  -v ON_ERROR_STOP=1 -f /schema/accounts.sql
-              fi
-              if [ "$(psql -d ledger-db -Atc "SELECT to_regclass('public.transactions') IS NOT NULL")" != "t" ]; then
-                PGPASSWORD="$LEDGER_PASSWORD" psql -d ledger-db -U ledger_admin \
-                  -v ON_ERROR_STOP=1 -f /schema/ledger.sql
-              fi
+              # The schema files are deliberately idempotent. Always replay them so a
+              # retry can finish indexes, rules, or grants after a partial first run.
+              PGPASSWORD="$ACCOUNTS_PASSWORD" psql -d accounts-db -U accounts_admin \
+                -v ON_ERROR_STOP=1 -f /schema/accounts.sql
+              PGPASSWORD="$LEDGER_PASSWORD" psql -d ledger-db -U ledger_admin \
+                -v ON_ERROR_STOP=1 -f /schema/ledger.sql
 
               PGPASSWORD="$ACCOUNTS_PASSWORD" psql -d accounts-db -U accounts_admin \
                 -v ON_ERROR_STOP=1 -f /bootstrap/02-cdc-probe.sql

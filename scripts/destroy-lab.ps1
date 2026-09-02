@@ -1,10 +1,18 @@
 $ErrorActionPreference = "Stop"
 
-Write-Host "This destroys only resources managed by this repository. Existing RDS, Cloud SQL, and DMS are not included."
-$confirmation = Read-Host "Type DESTROY-PHASE1 to continue"
-if ($confirmation -ne "DESTROY-PHASE1") {
-  throw "Cancelled"
-}
+throw @"
+Direct local destroy is disabled because it bypasses the reviewed saved-plan
+approval path. Run the GitHub workflow 'Terraform plan and apply' with
+action=destroy for one stack at a time.
 
-terraform -chdir="$PSScriptRoot/../terraform/aws-addons" destroy -auto-approve
-terraform -chdir="$PSScriptRoot/../terraform/aws-infra" destroy -auto-approve
+Ephemeral stack order:
+  1. gcp-addons
+  2. aws-addons
+  3. dr-data
+  4. gcp-dr
+  5. aws-infra
+
+Keep gcp-cicd and the remote-state buckets as bootstrap resources. They own the
+OIDC/WIF identity needed to run the workflow and remain managed in their remote
+state, so they do not become unmanaged name conflicts.
+"@

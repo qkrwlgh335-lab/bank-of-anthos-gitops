@@ -3,6 +3,47 @@ name: DR failover to GCP
 on:
   workflow_dispatch:
     inputs:
+      deployment:
+        description: Isolated deployment name
+        required: true
+        default: phase1
+        type: string
+      name_prefix:
+        description: Environment-unique resource and secret prefix
+        required: true
+        default: phase1-bank
+        type: string
+      gcp_project_id:
+        description: Approved GCP project for this deployment
+        required: true
+        default: kdt4-1-506106
+        type: string
+      gcp_region:
+        description: GCP region for this deployment
+        required: true
+        default: asia-northeast3
+        type: string
+      gcp_wif_provider:
+        description: Optional WIF provider override; otherwise use repository variable
+        required: false
+        type: string
+      gcp_dr_service_account:
+        description: Optional DR service-account override; otherwise use repository variable
+        required: false
+        type: string
+      gke_cluster:
+        description: Optional GKE cluster override
+        required: false
+        type: string
+      gke_node_pool:
+        description: Optional GKE node-pool override
+        required: false
+        type: string
+      db_bootstrap_ready:
+        description: Confirm this deployment completed DB bootstrap; failover still performs live DMS/Cloud SQL checks
+        required: true
+        default: false
+        type: boolean
       mode:
         description: Preflight checks readiness; platform-drill tests approved GKE activation without DB/DNS
         required: true
@@ -31,15 +72,23 @@ permissions:
   id-token: write
 
 concurrency:
-  group: gcp-dr-failover
+  group: ${{ inputs.deployment }}-gcp-dr-failover
   cancel-in-progress: false
 
 env:
-  GCP_PROJECT_ID: kdt4-1-506106
-  GCP_REGION: asia-northeast3
-  GAR_REPOSITORY: bank-of-anthos
-  MIGRATION_JOB: ${{ vars.GCP_MIGRATION_JOB }}
-  CLOUD_SQL_INSTANCE: ${{ vars.GCP_CLOUD_SQL_INSTANCE }}
+  GCP_PROJECT_ID: ${{ inputs.gcp_project_id }}
+  GCP_REGION: ${{ inputs.gcp_region }}
+  GAR_REPOSITORY: ${{ vars.GAR_REPOSITORY || 'bank-of-anthos' }}
+  GCP_WIF_PROVIDER: ${{ inputs.gcp_wif_provider || vars.GCP_WIF_PROVIDER }}
+  GCP_DR_SERVICE_ACCOUNT: ${{ inputs.gcp_dr_service_account || vars.GCP_DR_SERVICE_ACCOUNT }}
+  GKE_CLUSTER: ${{ inputs.gke_cluster || vars.GKE_CLUSTER || format('{0}-gke', inputs.name_prefix) }}
+  GKE_NODE_POOL: ${{ inputs.gke_node_pool || vars.GKE_NODE_POOL || 'pilot-light' }}
+  GKE_PILOT_LIGHT_NODES: ${{ vars.GKE_PILOT_LIGHT_NODES || '1' }}
+  GKE_FAILOVER_NODES: ${{ vars.GKE_FAILOVER_NODES || '3' }}
+  GCP_SECRET_PREFIX: ${{ vars.GCP_SECRET_PREFIX || inputs.name_prefix }}
+  DR_DB_BOOTSTRAP_READY: ${{ inputs.db_bootstrap_ready }}
+  MIGRATION_JOB: ${{ vars.GCP_MIGRATION_JOB || format('{0}-rds-to-cloudsql', inputs.name_prefix) }}
+  CLOUD_SQL_INSTANCE: ${{ vars.GCP_CLOUD_SQL_INSTANCE || format('{0}-dr-postgres', inputs.name_prefix) }}
 
 jobs:
   validate-input:
@@ -48,13 +97,20 @@ jobs:
     steps:
       - name: Validate immutable tag and explicit confirmations
         env:
+          DEPLOYMENT: ${{ inputs.deployment }}
+          NAME_PREFIX: ${{ inputs.name_prefix }}
           MODE: ${{ inputs.mode }}
           TAG: ${{ inputs.image_tag }}
           CONFIRMATION: ${{ inputs.confirmation }}
           RPO_ACKNOWLEDGEMENT: ${{ inputs.rpo_acknowledgement }}
-          DB_BOOTSTRAP_READY: ${{ vars.DR_DB_BOOTSTRAP_READY }}
+          DB_BOOTSTRAP_READY: ${{ env.DR_DB_BOOTSTRAP_READY }}
         run: |
           set -Eeuo pipefail
+          [[ "$DEPLOYMENT" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]] || { echo "Invalid deployment: $DEPLOYMENT"; exit 1; }
+          [[ "$NAME_PREFIX" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || { echo "Invalid name_prefix: $NAME_PREFIX"; exit 1; }
+          [[ -n "$GCP_WIF_PROVIDER" && -n "$GCP_DR_SERVICE_ACCOUNT" ]] || {
+            echo "Set gcp_wif_provider and gcp_dr_service_account inputs or repository variables"; exit 1;
+          }
           if [[ -n "$TAG" ]]; then
             [[ "$TAG" =~ ^sha-[0-9a-f]{40}$ ]] || { echo "Invalid immutable tag"; exit 1; }
           fi
@@ -91,12 +147,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_DR_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
+          service_account: ${{ env.GCP_DR_SERVICE_ACCOUNT }}
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
       - uses: google-github-actions/get-gke-credentials@3da1e46a907576cefaa90c484278bb5b259dd395 # v3
         with:
-          cluster_name: ${{ vars.GKE_CLUSTER }}
+          cluster_name: ${{ env.GKE_CLUSTER }}
           location: ${{ env.GCP_REGION }}
           project_id: ${{ env.GCP_PROJECT_ID }}
 
@@ -106,7 +162,7 @@ jobs:
           TAG: ${{ inputs.image_tag }}
         run: |
           set -Eeuo pipefail
-          status=$(gcloud container clusters describe "${{ vars.GKE_CLUSTER }}" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(status)')
+          status=$(gcloud container clusters describe "$GKE_CLUSTER" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(status)')
           [[ "$status" == "RUNNING" ]] || { echo "GKE is not RUNNING"; exit 1; }
 
           kubectl -n argocd rollout status statefulset/argocd-application-controller --timeout=3m
@@ -125,7 +181,7 @@ jobs:
             exit 1
           fi
 
-          for secret in phase1-bank-app-runtime phase1-bank-app-jwt; do
+          for secret in "$GCP_SECRET_PREFIX-app-runtime" "$GCP_SECRET_PREFIX-app-jwt"; do
             gcloud secrets versions describe latest --secret "$secret" --project "$GCP_PROJECT_ID" --format='value(state)' | grep -qx ENABLED
           done
           kubectl -n bank-dr wait externalsecret/bank-app-runtime --for=condition=Ready --timeout=3m
@@ -152,7 +208,7 @@ jobs:
             echo "- GKE: $status"
             echo "- Argo CD: $sync / $health"
             echo "- Business replicas: zero"
-            echo "- DB safety lock: ${{ vars.DR_DB_BOOTSTRAP_READY }}"
+            echo "- DB safety lock: $DR_DB_BOOTSTRAP_READY"
           } >> "$GITHUB_STEP_SUMMARY"
 
   approved-platform-drill:
@@ -160,7 +216,7 @@ jobs:
     if: inputs.mode == 'platform-drill'
     needs: platform-preflight
     runs-on: ubuntu-latest
-    environment: gcp-dr-approval
+    environment: ${{ inputs.deployment == 'phase1' && 'gcp-dr-approval' || format('{0}-gcp-dr-approval', inputs.deployment) }}
     permissions:
       contents: write
       id-token: write
@@ -170,29 +226,27 @@ jobs:
           token: ${{ secrets.GITOPS_TOKEN }}
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_DR_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
+          service_account: ${{ env.GCP_DR_SERVICE_ACCOUNT }}
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
       - uses: google-github-actions/get-gke-credentials@3da1e46a907576cefaa90c484278bb5b259dd395 # v3
         with:
-          cluster_name: ${{ vars.GKE_CLUSTER }}
+          cluster_name: ${{ env.GKE_CLUSTER }}
           location: ${{ env.GCP_REGION }}
           project_id: ${{ env.GCP_PROJECT_ID }}
 
-      - name: Record capacity and expand the pilot-light node pool
+      - name: Verify desired pilot-light capacity and expand the node pool
         id: capacity
         shell: bash
         run: |
           set -Eeuo pipefail
-          original_nodes=$(gcloud container node-pools describe "${{ vars.GKE_NODE_POOL }}" \
-            --cluster "${{ vars.GKE_CLUSTER }}" --project "$GCP_PROJECT_ID" \
-            --region "$GCP_REGION" --format='value(initialNodeCount)')
-          [[ "$original_nodes" =~ ^[1-9][0-9]*$ ]] || { echo "Cannot determine original node count"; exit 1; }
-          echo "original_nodes=$original_nodes" >> "$GITHUB_OUTPUT"
-          gcloud container clusters resize "${{ vars.GKE_CLUSTER }}" \
+          [[ "$GKE_PILOT_LIGHT_NODES" =~ ^[1-9][0-9]*$ ]] || {
+            echo "GKE_PILOT_LIGHT_NODES must be a positive integer"; exit 1;
+          }
+          gcloud container clusters resize "$GKE_CLUSTER" \
             --project "$GCP_PROJECT_ID" --region "$GCP_REGION" \
-            --node-pool "${{ vars.GKE_NODE_POOL }}" \
-            --num-nodes "${{ vars.GKE_FAILOVER_NODES }}" --quiet
+            --node-pool "$GKE_NODE_POOL" \
+            --num-nodes "$GKE_FAILOVER_NODES" --quiet
 
       - name: Activate the DB-independent image probe through GitOps
         id: activate
@@ -210,11 +264,15 @@ jobs:
           git config user.name "dr-platform-drill-bot"
           git config user.email "dr-platform-drill-bot@users.noreply.github.com"
           git add gitops/apps/bank-of-anthos/overlays/gcp-dr/kustomization.yaml
-          git commit -m "drill: activate GCP platform probe for ${INCIDENT_ID}"
-          scripts/open-auto-merge-pr.sh \
-            "drill/activate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            "drill: activate GCP platform probe for ${INCIDENT_ID}" \
-            "Approved platform drill. Incident/change ID: ${INCIDENT_ID}."
+          if ! git diff --cached --quiet; then
+            git commit -m "drill: activate GCP platform probe for ${INCIDENT_ID}"
+            scripts/open-auto-merge-pr.sh \
+              "drill/activate-${TAG}" \
+              "drill: activate GCP platform probe for ${INCIDENT_ID}" \
+              "Approved platform drill. Incident/change ID: ${INCIDENT_ID}."
+          else
+            echo "GCP platform probe is already active for ${TAG}; continuing verification"
+          fi
           echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Reconcile and verify all six release images on GKE
@@ -261,7 +319,7 @@ jobs:
             echo "- Incident: ${{ inputs.incident_id }}"
             echo "- Release: $TAG"
             echo "- Environment approval: gcp-dr-approval"
-            echo "- GKE node target: ${{ vars.GKE_FAILOVER_NODES }}"
+            echo "- GKE node target: $GKE_FAILOVER_NODES"
             echo "- Argo CD revision: $EXPECTED_REVISION / Synced"
             echo "- Six GAR release images: pulled and executed on GKE"
             echo "- DB-dependent deployments: remained at zero"
@@ -274,7 +332,6 @@ jobs:
         shell: bash
         env:
           TAG: ${{ inputs.image_tag }}
-          ORIGINAL_NODES: ${{ steps.capacity.outputs.original_nodes }}
           GH_TOKEN: ${{ secrets.GITOPS_TOKEN }}
         run: |
           set +e
@@ -287,7 +344,7 @@ jobs:
           if ! git diff --cached --quiet; then
             git commit -m "drill: restore GCP pilot-light state" || failed=1
             scripts/open-auto-merge-pr.sh \
-              "drill/restore-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+              "drill/restore-${TAG}" \
               "drill: restore GCP pilot-light state" \
               "Automatic restoration after approved platform drill run ${GITHUB_RUN_ID}." || failed=1
           fi
@@ -299,11 +356,10 @@ jobs:
             sleep 10
           done
           [[ "$replicas" == "0" ]] || failed=1
-          restore_nodes="${ORIGINAL_NODES:-1}"
-          gcloud container clusters resize "${{ vars.GKE_CLUSTER }}" \
+          gcloud container clusters resize "$GKE_CLUSTER" \
             --project "$GCP_PROJECT_ID" --region "$GCP_REGION" \
-            --node-pool "${{ vars.GKE_NODE_POOL }}" \
-            --num-nodes "$restore_nodes" --quiet || failed=1
+            --node-pool "$GKE_NODE_POOL" \
+            --num-nodes "$GKE_PILOT_LIGHT_NODES" --quiet || failed=1
           exit "$failed"
 
   data-preflight:
@@ -314,8 +370,8 @@ jobs:
     steps:
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_DR_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
+          service_account: ${{ env.GCP_DR_SERVICE_ACCOUNT }}
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
       - name: Verify configured migration job and standby database
         env:
@@ -356,7 +412,7 @@ jobs:
     if: inputs.mode == 'failover'
     needs: data-preflight
     runs-on: ubuntu-latest
-    environment: gcp-dr-approval
+    environment: ${{ inputs.deployment == 'phase1' && 'gcp-dr-approval' || format('{0}-gcp-dr-approval', inputs.deployment) }}
     permissions:
       contents: write
       id-token: write
@@ -366,12 +422,12 @@ jobs:
           token: ${{ secrets.GITOPS_TOKEN }}
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_DR_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
+          service_account: ${{ env.GCP_DR_SERVICE_ACCOUNT }}
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
       - uses: google-github-actions/get-gke-credentials@3da1e46a907576cefaa90c484278bb5b259dd395 # v3
         with:
-          cluster_name: ${{ vars.GKE_CLUSTER }}
+          cluster_name: ${{ env.GKE_CLUSTER }}
           location: ${{ env.GCP_REGION }}
           project_id: ${{ env.GCP_PROJECT_ID }}
 
@@ -407,12 +463,12 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          app_json=$(gcloud secrets versions access latest --secret phase1-bank-app-db \
+          app_json=$(gcloud secrets versions access latest --secret "$GCP_SECRET_PREFIX-app-db" \
             --project "$GCP_PROJECT_ID")
           accounts_password=$(jq -r '.accounts_password' <<<"$app_json")
           ledger_password=$(jq -r '.ledger_password' <<<"$app_json")
           postgres_password=$(gcloud secrets versions access latest \
-            --secret phase1-bank-cloudsql-admin --project "$GCP_PROJECT_ID")
+            --secret "$GCP_SECRET_PREFIX-cloudsql-admin" --project "$GCP_PROJECT_ID")
           cloudsql_ip=$(gcloud sql instances describe "$CLOUD_SQL_INSTANCE" \
             --project "$GCP_PROJECT_ID" --format=json | \
             jq -r '.ipAddresses[] | select(.type == "PRIVATE") | .ipAddress')
@@ -447,9 +503,9 @@ jobs:
 
       - name: Expand pilot-light GKE capacity
         run: |
-          gcloud container clusters resize "${{ vars.GKE_CLUSTER }}" \
+          gcloud container clusters resize "$GKE_CLUSTER" \
             --project "$GCP_PROJECT_ID" --region "$GCP_REGION" \
-            --node-pool "${{ vars.GKE_NODE_POOL }}" --num-nodes "${{ vars.GKE_FAILOVER_NODES }}" --quiet
+            --node-pool "$GKE_NODE_POOL" --num-nodes "$GKE_FAILOVER_NODES" --quiet
 
       - name: Activate immutable GAR images in the GCP overlay
         env:
@@ -466,7 +522,7 @@ jobs:
           if ! git diff --cached --quiet; then
             git commit -m "dr: activate GCP for ${INCIDENT_ID} with ${TAG}"
             scripts/open-auto-merge-pr.sh \
-              "dr/failover-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+              "dr/failover-${TAG}" \
               "dr: activate GCP for ${INCIDENT_ID} with ${TAG}" \
               "Approved DR activation. Incident ID: ${INCIDENT_ID}; immutable tag: ${TAG}."
           else
@@ -484,6 +540,6 @@ jobs:
     if: inputs.mode == 'failover'
     needs: approved-failover
     runs-on: ubuntu-latest
-    environment: gcp-traffic-cutover
+    environment: ${{ inputs.deployment == 'phase1' && 'gcp-traffic-cutover' || format('{0}-gcp-traffic-cutover', inputs.deployment) }}
     steps:
       - run: echo "Smoke test passed. DNS stays unchanged until separate authoritative-DNS approval."
