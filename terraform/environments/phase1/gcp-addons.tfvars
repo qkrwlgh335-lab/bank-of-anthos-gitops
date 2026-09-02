@@ -1,0 +1,5 @@
+project_id          = "kdt4-1-506106"
+approved_project_id = "kdt4-1-506106"
+region              = "asia-northeast3"
+state_bucket        = "phase1-cicd-tfstate-kdt4-1-506106"
+dr_state_prefix     = "gcp-dr"
