@@ -8,8 +8,8 @@
 |---|---|---|
 | GKE Pilot Light | 완료 | `phase1-bank-gke`, regional, pilot node 1대 Ready |
 | GCP Argo CD / External Secrets | 완료 | Application `Synced / Healthy`, 두 ExternalSecret `Ready` |
-| 업무 workload 대기 | 완료 | 6개 서비스와 Redis 모두 `replicas=0` |
-| 승인형 DR workflow | 플랫폼 구현 완료 | platform/data/failover 3단계로 분리 |
+| 업무 workload 대기 | 완료 | 6개 서비스, Redis, Drill Probe 모두 `replicas=0` |
+| 승인형 DR workflow | 플랫폼 실구동 완료 | 승인 후 1→3노드, 6이미지 Probe, 3→1노드 원복 검증 |
 | DB 전환 | 안전 잠금 | DB 삭제 상태이므로 `DR_DB_BOOTSTRAP_READY=false` 유지 |
 | HIGH 취약점 차단 | 구현 완료 | Trivy `HIGH,CRITICAL`, `ignore-unfixed=true`, exit code 1 |
 | Branch protection | 완료 | 두 저장소 main에 고정 required check 적용 |
@@ -17,6 +17,18 @@
 
 ## 최종 실행 증거
 
+- [최종 전체 6개 CI run 33596476481](https://github.com/qkrwlgh335-lab/bank-of-anthos-app/actions/runs/33596476481):
+  최신 main에서 6개 test/build, HIGH/CRITICAL gate, ECR/GAR push, `CI required gate`,
+  GitOps promotion 모두 성공
+- 최신 CI 이미지 태그: `sha-074b9db2e20624f159595ce4308fcf285c4ea3a9`
+- [승인형 DB-independent DR drill run 33595881758](https://github.com/qkrwlgh335-lab/bank-of-anthos-gitops/actions/runs/33595881758):
+  `gcp-dr-approval` 승인, GKE 1→3노드 확장, 공통 SHA의 GAR 이미지 6개를 GKE에서 실제
+  pull/실행, Argo CD reconcile, 업무 replicas 0 유지, Probe 0 및 GKE 3→1 자동 원복 성공
+- Drill 검증 이미지 태그: `sha-a5a94e243a17b51161229d7be85787d6e8f472c5`
+- [원복 후 platform-preflight run 33596478999](https://github.com/qkrwlgh335-lab/bank-of-anthos-gitops/actions/runs/33596478999):
+  Argo CD `Synced / Healthy`, 업무·Probe replicas 0 재확인
+- [최종 gcp-dr plan run 33596481364](https://github.com/qkrwlgh335-lab/bank-of-anthos-gitops/actions/runs/33596481364):
+  다섯 Terraform root fmt/validate와 required gate 성공, `gcp-dr`는 `No changes`
 - [전체 6개 CI run 33582768076](https://github.com/qkrwlgh335-lab/bank-of-anthos-app/actions/runs/33582768076):
   6개 test/build, HIGH/CRITICAL gate, ECR/GAR push, 고정 CI gate, GitOps promotion 성공
 - 공통 이미지 태그: `sha-a5a94e243a17b51161229d7be85787d6e8f472c5`
@@ -38,19 +50,24 @@
 - 상주 구성요소: Argo CD, External Secrets Operator
 - Secret 원본: GCP Secret Manager의 `phase1-bank-app-runtime`, `phase1-bank-app-jwt`
 - 업무 Deployment: 6개와 Redis 모두 0 replicas
+- DB-independent `dr-platform-probe`: 평시 0 replicas
 - Ingress/NEG: 평시에는 만들지 않음. 승인형 failover가 replicas와 함께 활성화
 
 DB가 삭제된 현재 Secret version은 연결 구조 검증용 placeholder다. External Secrets가 이를
 읽는 것까지는 검증했지만 앱이 잘못된 DB로 기동하지 않도록 replicas 0과
 `DR_DB_BOOTSTRAP_READY=false`를 함께 유지한다.
 
-## DR workflow의 세 모드
+## DR workflow의 네 모드
 
 1. `platform-preflight`: DB 없이 GKE, Argo CD, External Secrets, immutable GAR 이미지,
    업무 replicas 0을 검사한다.
-2. `data-preflight`: 새 DB PoC 이후 `GCP_MIGRATION_JOB`, `GCP_CLOUD_SQL_INSTANCE`를 등록하고
+2. `platform-drill`: `DRILL-GCP-NO-DB` 확인 문자열과 `gcp-dr-approval` 승인을 받은 뒤
+   GKE를 1→3노드로 확장한다. 전용 Probe의 init container가 여섯 GAR 이미지를 실제 GKE에서
+   실행하고, 업무 Deployment는 계속 0으로 유지한다. 성공·실패와 무관하게 Probe 0과 원래
+   노드 수로 복구한다. Cloud SQL/DMS와 Ingress/DNS는 접근하지 않는다.
+3. `data-preflight`: 새 DB PoC 이후 `GCP_MIGRATION_JOB`, `GCP_CLOUD_SQL_INSTANCE`를 등록하고
    DMS `RUNNING / CDC`와 Cloud SQL read replica를 검사한다.
-3. `failover`: immutable tag, `PROMOTE-GCP`, `ACCEPT-LAST-REPLICATED-DATA`,
+4. `failover`: immutable tag, `PROMOTE-GCP`, `ACCEPT-LAST-REPLICATED-DATA`,
    `DR_DB_BOOTSTRAP_READY=true`가 모두 있어야 `gcp-dr-approval` 승인 대기로 진입한다.
    승인 뒤 Cloud SQL 승격, GKE 3노드 확장, replicas/Ingress 활성화, Smoke Test 순으로 수행한다.
    그 뒤 `gcp-traffic-cutover` 두 번째 승인을 받는다.
@@ -92,6 +109,10 @@ Java는 distroless 런타임과 수정된 Netty/PostgreSQL JDBC 버전을 사용
 자동 커밋도 그 단기 PAT를 사용하기 때문이다. 팀원을 추가하면 승인자 1명, 관리자 강제로
 올리고 GitOps 승격은 GitHub App 또는 전용 bypass actor로 바꾼다.
 
+PoC의 승인 Job용 `GITOPS_TOKEN`은 저장소 전체가 아니라 `gcp-dr-approval` Environment
+secret으로 제한했다. 장기 운영에서는 개인 OAuth/PAT 대신 GitHub App 또는 전용 bot의
+Fine-grained PAT로 교체한다.
+
 ## OIDC 최소권한 보완
 
 DR 계정에 프로젝트 전체 `container.developer`를 추가하지 않는다. GKE 내부 Role/RoleBinding으로
@@ -102,6 +123,13 @@ RBAC라는 두 경계로 분리한다.
 Terraform 계정에는 state object 접근용 기존 bucket `storage.objectAdmin`만 유지한다. 자기 IAM
 binding을 refresh하려면 bucket IAM 관리자까지 필요해지는 순환 구조를 피하기 위해 해당 binding은
 `gcp-dr` state 관리 대상에서 제거하되 실제 권한은 삭제하지 않는다.
+
+## 비차단 유지보수 항목
+
+GitHub-hosted runner가 `actions/checkout@v4`, `setup-uv@v6`,
+`configure-aws-credentials@v5`의 Node.js 20 런타임을 Node.js 24로 강제 실행한다는 deprecation
+경고를 출력했다. 모든 Job은 성공했으므로 현재 장애는 아니지만, 각 Action의 Node.js 24 기반
+새 major가 안정화되면 버전을 갱신한다.
 
 ## DNS 제안안 — 아직 구현하지 않음
 

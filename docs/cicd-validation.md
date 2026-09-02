@@ -10,6 +10,8 @@
 GCP는 regional GKE와 pilot node 1대, GCP-side Argo CD/External Secrets까지 실제 생성했고
 `bank-of-anthos-gcp-dr` Application의 `Synced / Healthy`, 업무 replicas 0을 확인했다. 다만
 사용자가 DB PoC 리소스를 삭제했으므로 Cloud SQL 승격과 전체 failover는 의도적으로 잠갔다.
+DB·DNS를 제외한 승인형 `platform-drill`은 GKE 확장, 여섯 이미지 실행, Argo 동기화와 자동
+원복까지 실제로 성공했다.
 
 ## 구성과 책임 경계
 
@@ -35,6 +37,11 @@ HIGH 차단 보완 후 최종 전체 재검증은
 [app run 33582768076](https://github.com/qkrwlgh335-lab/bank-of-anthos-app/actions/runs/33582768076)이며,
 6개 서비스가 공통 태그 `sha-a5a94e243a17b51161229d7be85787d6e8f472c5`로 모두 성공했다.
 
+최신 main 회귀 검증은
+[app run 33596476481](https://github.com/qkrwlgh335-lab/bank-of-anthos-app/actions/runs/33596476481)이다.
+6개 서비스, `CI required gate`, ECR/GAR 이중 Push, GitOps promotion이 모두 성공했고 태그는
+`sha-074b9db2e20624f159595ce4308fcf285c4ea3a9`다.
+
 ### 4. GCP Pilot Light
 
 - GKE `phase1-bank-gke`, pilot node 1대: Ready
@@ -43,6 +50,20 @@ HIGH 차단 보완 후 최종 전체 재검증은
 - 6개 업무 Deployment와 Redis: 모두 replicas 0
 - [platform-preflight run 33583014975](https://github.com/qkrwlgh335-lab/bank-of-anthos-gitops/actions/runs/33583014975): 성공
 - DB가 없어 data/failover/traffic job은 skipped
+
+### 5. 승인형 DB-independent GCP Drill
+
+- [DR drill run 33595881758](https://github.com/qkrwlgh335-lab/bank-of-anthos-gitops/actions/runs/33595881758): 성공
+- GitHub Environment: `gcp-dr-approval`에서 실제 승인
+- GKE `pilot-light`: 1→3노드 확장 성공
+- Argo GitOps activation commit: `6e56b87`
+- 6개 GAR 이미지: 전용 Probe init container에서 모두 pull 및 exit code 0
+- DB 의존 업무 Deployment: 전 과정 replicas 0
+- Cloud SQL/DMS 및 Ingress/DNS: 접근·생성·변경 없음
+- GitOps restore commit: `be7a7f5`
+- Probe: replicas 0, GKE: 3→1노드 자동 원복 성공
+- [원복 후 preflight run 33596478999](https://github.com/qkrwlgh335-lab/bank-of-anthos-gitops/actions/runs/33596478999): 성공
+- [원복 후 gcp-dr plan run 33596481364](https://github.com/qkrwlgh335-lab/bank-of-anthos-gitops/actions/runs/33596481364): `No changes`
 
 ### 2. 서비스별 독립 배포
 
@@ -73,6 +94,7 @@ ALB 주소는 임시 실습 리소스이므로 고정 문서 주소나 운영 DN
 | Python 컨테이너의 `gunicorn` 없음 | CI가 만든 host `.venv`가 Docker builder 결과를 덮어씀 | Python 3개 `.dockerignore`에 `.venv/` 추가, 새 이미지 기동 성공 |
 | 앱이 Google ADC를 찾다 종료 | 인증 없이 `ENABLE_TRACING=true` | 현재 PoC base에서 tracing 비활성화, 6개 서비스 기동 성공 |
 | GitHub OIDC AssumeRole 실패 | 계정이 immutable repository ID가 든 사용자 정의 subject 사용 | CloudTrail의 실제 subject로 IAM trust를 제한해 ECR/Terraform OIDC 성공 |
+| 첫 승인 Drill의 Checkout 실패 | GitOps 저장소 승인 환경에 `GITOPS_TOKEN`이 없었음 | `gcp-dr-approval` Environment secret으로 범위를 제한해 등록, 재실행 성공 |
 
 `/.gunicorn`의 read-only 경고는 남을 수 있지만 worker와 readiness에는 영향을 주지 않았다.
 운영 이미지에서는 gunicorn control 파일 경로를 writable `emptyDir`로 명시하는 편이 좋다.
@@ -101,12 +123,13 @@ curl.exe "http://$AlbHost/ready"
 - EKS/ALB 로그인 smoke test
 - Terraform format/validate와 OIDC plan 실행
 - GCP GKE Pilot Light와 GCP Argo CD/External Secrets
+- DB·DNS 제외 승인형 GCP platform drill과 자동 원복
 - 두 저장소 branch protection과 고정 required check
 
 미완료:
 
 - Cloud SQL 승격 후 DB role/grant/secret bootstrap
-- DR 승인 workflow의 실제 failover와 RTO/RPO 계측
+- DB 승격을 포함한 실제 failover와 RTO/RPO 계측
 - DNS 실제 전환
 - HTTPS, 관측성, NetworkPolicy
 
@@ -116,3 +139,8 @@ curl.exe "http://$AlbHost/ready"
 세 stack의 format/validate와 GitHub OIDC 인증이 성공했다. `aws-infra` plan은
 `0 add, 1 change, 0 destroy`이며, 남은 1개는 실행 주체를 고정하기 위한 KMS key policy
 in-place 변경이다. 실제 apply는 수행하지 않았다.
+
+GCP Drill 원복 후에는
+[Terraform run 33596481364](https://github.com/qkrwlgh335-lab/bank-of-anthos-gitops/actions/runs/33596481364)에서
+다섯 root의 format/validate와 `Terraform required gate`가 성공했고 `gcp-dr` plan은
+`No changes. Your infrastructure matches the configuration.`으로 확인됐다.

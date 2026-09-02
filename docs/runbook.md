@@ -9,6 +9,8 @@
 4. `terraform/gcp-cicd`를 기준으로 관리자가 GAR와 GitHub WIF를 한 번 부트스트랩합니다.
 5. Terraform 출력으로 GitHub variables를 등록하고, 앱 저장소에는 GitOps 저장소 하나만
    선택한 단기 Fine-grained PAT를 `GITOPS_TOKEN` Actions secret으로 등록합니다.
+   승인형 DR이 GitOps 저장소에 activation/restore commit을 남기도록 GitOps 저장소의
+   `gcp-dr-approval` Environment에도 push 권한이 있는 `GITOPS_TOKEN`을 등록합니다.
 6. 앱 저장소의 `Service CI and GitOps promotion`을 실행해 여섯 이미지를 양쪽 Registry에
    넣고 GitOps 태그를 `sha-<commit>`으로 변경합니다.
 7. `terraform/aws-addons`를 apply합니다.
@@ -21,6 +23,21 @@
 `DR failover to GCP` workflow를 `platform-preflight`로 실행합니다. 이 모드는 DB가 없어도
 GKE, Argo CD, External Secrets, GAR 이미지와 0 replicas를 검사하며 Cloud SQL 승격이나
 노드 확장을 수행하지 않습니다.
+
+## DB·DNS 제외 승인형 GCP Drill
+
+DB가 없는 상태에서 승인 절차와 GCP 플랫폼만 검증할 때 `platform-drill`을 사용합니다.
+
+1. 검증할 공통 `sha-<40자 commit>` 태그와 Incident ID를 입력합니다.
+2. confirmation에 `DRILL-GCP-NO-DB`를 정확히 입력합니다.
+3. `gcp-dr-approval` reviewer가 승인합니다.
+4. Workflow가 GKE 1→3노드, GitOps Probe activation, 여섯 GAR 이미지 pull/실행,
+   업무 replicas 0을 검사합니다.
+5. Workflow의 `always()` 복구 단계가 Probe를 0으로 만들고 노드를 원래 수로 되돌립니다.
+6. 완료 후 `platform-preflight`와 `terraform gcp-dr plan`으로 원복을 재검증합니다.
+
+이 모드는 Cloud SQL/DMS, 업무 Deployment, Ingress, DNS를 변경하지 않습니다. 따라서 앱 로그인,
+조회, 송금 같은 기능 Smoke Test나 RPO/RTO는 증명하지 않습니다.
 
 DB를 다시 만든 뒤 `data-preflight`를 실행하고, 실제 장애 훈련에서만 두 Environment 승인과
 확인 문자열을 갖춰 `failover`를 사용합니다.

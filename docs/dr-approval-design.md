@@ -10,15 +10,18 @@ AWS 전체 장애가 선언되면 `DR failover to GCP` workflow를 실행합니�
 
 1. `platform-preflight`는 DB 없이 GKE, Argo CD, External Secrets, GAR 이미지와 0 replicas를
    읽기 전용으로 검사합니다.
-2. `data-preflight`는 DB를 다시 만든 뒤 DMS `RUNNING / CDC`와 Cloud SQL read replica를
+2. `platform-drill`은 `gcp-dr-approval` 승인을 실제 검증하되 DB/DNS를 제외합니다. GKE를
+   1→3노드로 확장하고 전용 Probe가 여섯 GAR 이미지를 GKE에서 실행한 뒤 Probe 0과 1노드로
+   자동 복구합니다. 업무 Deployment는 계속 0입니다.
+3. `data-preflight`는 DB를 다시 만든 뒤 DMS `RUNNING / CDC`와 Cloud SQL read replica를
    별도로 검사합니다.
-3. 내부 회의 결과에 따라 `gcp-dr-approval` GitHub Environment reviewer가 승인합니다.
-4. 승인된 job만 DMS destination을 writer로 승격합니다. 이 단계는 되돌릴 수 없는 전환으로
+4. 내부 회의 결과에 따라 `gcp-dr-approval` GitHub Environment reviewer가 승인합니다.
+5. 승인된 job만 DMS destination을 writer로 승격합니다. 이 단계는 되돌릴 수 없는 전환으로
    취급하며 입력값 `PROMOTE-GCP`와 `ACCEPT-LAST-REPLICATED-DATA`가 모두 일치해야 합니다.
-5. GKE node pool을 1대에서 3대로 확장하고 GCP overlay의 태그·replica·Ingress를 갱신합니다.
-6. GCP에 상주하는 Argo CD가 GAR 이미지로 여섯 Deployment를 reconcile합니다.
-7. frontend rollout과 smoke test 후 두 번째 `gcp-traffic-cutover` 승인을 받습니다.
-8. 권한 DNS 사업자가 정해지기 전까지 DNS 변경은 자동화하지 않습니다.
+6. GKE node pool을 1대에서 3대로 확장하고 GCP overlay의 태그·replica·Ingress를 갱신합니다.
+7. GCP에 상주하는 Argo CD가 GAR 이미지로 여섯 Deployment를 reconcile합니다.
+8. frontend rollout과 smoke test 후 두 번째 `gcp-traffic-cutover` 승인을 받습니다.
+9. 권한 DNS 사업자가 정해지기 전까지 DNS 변경은 자동화하지 않습니다.
 
 ## 아직 인프라팀과 확정해야 할 계약
 
