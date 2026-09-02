@@ -30,3 +30,15 @@ output "terraform_service_account" {
 output "secret_reader_service_account" {
   value = google_service_account.secret_reader.email
 }
+
+output "network_name" {
+  value = google_compute_network.dr.name
+}
+
+output "router_name" {
+  value = google_compute_router.dr.name
+}
+
+output "cloudsql_private_service_cidr" {
+  value = var.cloudsql_private_service_cidr
+}

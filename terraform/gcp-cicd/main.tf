@@ -36,12 +36,12 @@ resource "google_artifact_registry_repository" "bank" {
 }
 
 resource "google_service_account" "app_ci" {
-  account_id   = "github-bank-app-ci"
+  account_id   = var.app_ci_service_account_id
   display_name = "GitHub Bank App CI (WIF only)"
 }
 
 resource "google_iam_workload_identity_pool" "github" {
-  workload_identity_pool_id = "github-phase1"
+  workload_identity_pool_id = var.workload_identity_pool_id
   display_name              = "GitHub Actions Phase 1"
   description               = "Keyless GitHub Actions identities restricted by repository"
 
@@ -50,7 +50,7 @@ resource "google_iam_workload_identity_pool" "github" {
 
 resource "google_iam_workload_identity_pool_provider" "github" {
   workload_identity_pool_id          = google_iam_workload_identity_pool.github.workload_identity_pool_id
-  workload_identity_pool_provider_id = "github-provider"
+  workload_identity_pool_provider_id = var.workload_identity_provider_id
   display_name                       = "GitHub Actions OIDC"
 
   attribute_mapping = {

@@ -1,5 +1,5 @@
 resource "google_compute_ha_vpn_gateway" "aws" {
-  name    = "phase1-bank-aws-ha-vpn"
+  name    = "${var.resource_name_prefix}-aws-ha-vpn"
   project = var.gcp_project_id
   region  = var.gcp_region
   network = data.google_compute_network.dr.id
@@ -16,7 +16,7 @@ resource "aws_customer_gateway" "gcp" {
   type       = "ipsec.1"
 
   tags = {
-    Name = "phase1-bank-gcp-${each.key}"
+    Name = "${var.resource_name_prefix}-gcp-${each.key}"
   }
 }
 
@@ -25,7 +25,7 @@ resource "aws_vpn_gateway" "gcp" {
   amazon_side_asn = var.aws_router_asn
 
   tags = {
-    Name = "phase1-bank-gcp-vgw"
+    Name = "${var.resource_name_prefix}-gcp-vgw"
   }
 }
 
@@ -65,7 +65,7 @@ resource "aws_vpn_connection" "gcp_interface_0" {
   tunnel2_phase2_dh_group_numbers      = [14]
 
   tags = {
-    Name = "phase1-bank-gcp-interface-0"
+    Name = "${var.resource_name_prefix}-gcp-interface-0"
   }
 }
 
@@ -98,7 +98,7 @@ resource "aws_vpn_connection" "gcp_interface_1" {
   tunnel2_phase2_dh_group_numbers      = [14]
 
   tags = {
-    Name = "phase1-bank-gcp-interface-1"
+    Name = "${var.resource_name_prefix}-gcp-interface-1"
   }
 }
 
@@ -151,7 +151,7 @@ locals {
 }
 
 resource "google_compute_external_vpn_gateway" "aws" {
-  name            = "phase1-bank-aws-peer"
+  name            = "${var.resource_name_prefix}-aws-peer"
   project         = var.gcp_project_id
   redundancy_type = "FOUR_IPS_REDUNDANCY"
 
@@ -168,14 +168,14 @@ resource "google_compute_external_vpn_gateway" "aws" {
 resource "google_compute_vpn_tunnel" "aws" {
   for_each = local.vpn_tunnels
 
-  name                            = "phase1-bank-aws-${each.key}"
+  name                            = "${var.resource_name_prefix}-aws-${each.key}"
   project                         = var.gcp_project_id
   region                          = var.gcp_region
   vpn_gateway                     = google_compute_ha_vpn_gateway.aws.id
   vpn_gateway_interface           = each.value.gcp_interface
   peer_external_gateway           = google_compute_external_vpn_gateway.aws.id
   peer_external_gateway_interface = each.value.peer_interface
-  router                          = var.gcp_router_name
+  router                          = local.gcp_router_name
   shared_secret                   = each.value.shared_secret
   ike_version                     = 2
 }
@@ -183,10 +183,10 @@ resource "google_compute_vpn_tunnel" "aws" {
 resource "google_compute_router_interface" "aws" {
   for_each = local.vpn_tunnels
 
-  name       = "phase1-bank-aws-${each.key}"
+  name       = "${var.resource_name_prefix}-aws-${each.key}"
   project    = var.gcp_project_id
   region     = var.gcp_region
-  router     = var.gcp_router_name
+  router     = local.gcp_router_name
   ip_range   = "${each.value.gcp_inside_ip}/${split("/", each.value.inside_cidr)[1]}"
   vpn_tunnel = google_compute_vpn_tunnel.aws[each.key].name
 }
@@ -194,10 +194,10 @@ resource "google_compute_router_interface" "aws" {
 resource "google_compute_router_peer" "aws" {
   for_each = local.vpn_tunnels
 
-  name                      = "phase1-bank-aws-${each.key}"
+  name                      = "${var.resource_name_prefix}-aws-${each.key}"
   project                   = var.gcp_project_id
   region                    = var.gcp_region
-  router                    = var.gcp_router_name
+  router                    = local.gcp_router_name
   interface                 = google_compute_router_interface.aws[each.key].name
   peer_ip_address           = each.value.aws_inside_ip
   peer_asn                  = var.aws_router_asn

@@ -39,6 +39,12 @@ locals {
     "roles/datamigration.admin",
     "roles/secretmanager.viewer",
   ])
+  workload_identity_pool_name = try(
+    data.terraform_remote_state.cicd.outputs.workload_identity_provider != "" ?
+    dirname(data.terraform_remote_state.cicd.outputs.workload_identity_provider) :
+    var.workload_identity_pool_name,
+    var.workload_identity_pool_name,
+  )
 }
 
 resource "google_project_service" "required" {
@@ -50,33 +56,33 @@ resource "google_project_service" "required" {
 }
 
 resource "google_compute_network" "dr" {
-  name                    = "phase1-bank-dr-vpc"
+  name                    = var.network_name
   auto_create_subnetworks = false
 
   depends_on = [google_project_service.required]
 }
 
 resource "google_compute_subnetwork" "gke" {
-  name          = "phase1-bank-gke-subnet"
+  name          = var.subnetwork_name
   region        = var.region
   network       = google_compute_network.dr.id
-  ip_cidr_range = "10.50.0.0/20"
+  ip_cidr_range = var.gke_subnet_cidr
 
   private_ip_google_access = true
 
   secondary_ip_range {
     range_name    = "gke-pods"
-    ip_cidr_range = "10.52.0.0/16"
+    ip_cidr_range = var.gke_pods_cidr
   }
 
   secondary_ip_range {
     range_name    = "gke-services"
-    ip_cidr_range = "10.51.0.0/20"
+    ip_cidr_range = var.gke_services_cidr
   }
 }
 
 resource "google_compute_router" "dr" {
-  name    = "phase1-bank-dr-router"
+  name    = var.router_name
   region  = var.region
   network = google_compute_network.dr.id
 
@@ -86,14 +92,14 @@ resource "google_compute_router" "dr" {
     advertised_groups = ["ALL_SUBNETS"]
 
     advertised_ip_ranges {
-      range       = "10.53.0.0/24"
+      range       = var.cloudsql_private_service_cidr
       description = "Cloud SQL private service range advertised to AWS over HA VPN"
     }
   }
 }
 
 resource "google_compute_router_nat" "dr" {
-  name                               = "phase1-bank-dr-nat"
+  name                               = var.nat_name
   router                             = google_compute_router.dr.name
   region                             = var.region
   nat_ip_allocate_option             = "AUTO_ONLY"
@@ -111,7 +117,7 @@ resource "google_compute_router_nat" "dr" {
 }
 
 resource "google_service_account" "gke_nodes" {
-  account_id   = "phase1-gke-nodes"
+  account_id   = var.node_service_account_id
   display_name = "Phase 1 GKE pilot-light nodes"
 }
 
@@ -151,7 +157,7 @@ resource "google_container_cluster" "dr" {
   private_cluster_config {
     enable_private_nodes    = true
     enable_private_endpoint = false
-    master_ipv4_cidr_block  = "172.16.0.0/28"
+    master_ipv4_cidr_block  = var.gke_master_cidr
 
     master_global_access_config {
       enabled = true
@@ -211,7 +217,7 @@ resource "google_container_node_pool" "pilot_light" {
 }
 
 resource "google_secret_manager_secret" "runtime" {
-  secret_id = "phase1-bank-app-runtime"
+  secret_id = var.runtime_secret_id
 
   replication {
     auto {}
@@ -221,7 +227,7 @@ resource "google_secret_manager_secret" "runtime" {
 }
 
 resource "google_secret_manager_secret" "jwt" {
-  secret_id = "phase1-bank-app-jwt"
+  secret_id = var.jwt_secret_id
 
   replication {
     auto {}
@@ -231,7 +237,7 @@ resource "google_secret_manager_secret" "jwt" {
 }
 
 resource "google_service_account" "secret_reader" {
-  account_id   = "bank-dr-secrets"
+  account_id   = var.secret_reader_service_account_id
   display_name = "Bank DR External Secrets reader"
 }
 
@@ -258,14 +264,14 @@ resource "google_secret_manager_secret_iam_member" "jwt_reader" {
 }
 
 resource "google_service_account" "dr_control" {
-  account_id   = "github-bank-dr-control"
+  account_id   = var.dr_control_service_account_id
   display_name = "GitHub approved GCP DR control"
 }
 
 resource "google_service_account_iam_member" "dr_control_wif" {
   service_account_id = google_service_account.dr_control.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "principalSet://iam.googleapis.com/${var.workload_identity_pool_name}/attribute.repository/${local.platform_repo}"
+  member             = "principalSet://iam.googleapis.com/${local.workload_identity_pool_name}/attribute.repository/${local.platform_repo}"
 }
 
 resource "google_project_iam_member" "dr_control" {
@@ -277,14 +283,14 @@ resource "google_project_iam_member" "dr_control" {
 }
 
 resource "google_service_account" "terraform" {
-  account_id   = "github-bank-terraform"
+  account_id   = var.terraform_service_account_id
   display_name = "GitHub Terraform for GCP DR"
 }
 
 resource "google_service_account_iam_member" "terraform_wif" {
   service_account_id = google_service_account.terraform.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "principalSet://iam.googleapis.com/${var.workload_identity_pool_name}/attribute.repository/${local.platform_repo}"
+  member             = "principalSet://iam.googleapis.com/${local.workload_identity_pool_name}/attribute.repository/${local.platform_repo}"
 }
 
 resource "google_project_iam_member" "terraform" {

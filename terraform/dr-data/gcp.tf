@@ -1,10 +1,10 @@
 resource "google_compute_global_address" "cloudsql_private_service" {
-  name          = "phase1-bank-cloudsql-range"
+  name          = "${var.resource_name_prefix}-cloudsql-range"
   project       = var.gcp_project_id
   purpose       = "VPC_PEERING"
   address_type  = "INTERNAL"
-  address       = cidrhost(var.cloudsql_private_service_cidr, 0)
-  prefix_length = tonumber(split("/", var.cloudsql_private_service_cidr)[1])
+  address       = cidrhost(local.cloudsql_private_service_cidr, 0)
+  prefix_length = tonumber(split("/", local.cloudsql_private_service_cidr)[1])
   network       = data.google_compute_network.dr.id
 }
 
@@ -76,7 +76,7 @@ resource "google_sql_database_instance" "standby" {
 
 resource "google_secret_manager_secret" "dms_source" {
   project   = var.gcp_project_id
-  secret_id = "phase1-bank-dms-source"
+  secret_id = "${var.resource_name_prefix}-dms-source"
 
   replication {
     auto {}
@@ -85,7 +85,7 @@ resource "google_secret_manager_secret" "dms_source" {
 
 resource "google_secret_manager_secret" "cloudsql_admin" {
   project   = var.gcp_project_id
-  secret_id = "phase1-bank-cloudsql-admin"
+  secret_id = "${var.resource_name_prefix}-cloudsql-admin"
 
   replication {
     auto {}

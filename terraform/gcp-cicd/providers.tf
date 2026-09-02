@@ -5,4 +5,11 @@ provider "google" {
 
 data "google_project" "current" {
   project_id = var.project_id
+
+  lifecycle {
+    postcondition {
+      condition     = self.project_id == var.approved_project_id
+      error_message = "Refusing to manage CI/CD resources outside project ${var.approved_project_id}."
+    }
+  }
 }

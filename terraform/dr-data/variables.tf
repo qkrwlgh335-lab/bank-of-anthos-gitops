@@ -56,6 +56,28 @@ variable "gcp_router_name" {
   default = "phase1-bank-dr-router"
 }
 
+variable "gcp_state_bucket" {
+  type    = string
+  default = "phase1-cicd-tfstate-kdt4-1-506106"
+}
+
+variable "gcp_dr_state_prefix" {
+  type    = string
+  default = "gcp-dr"
+}
+
+variable "resource_name_prefix" {
+  description = "Environment-unique prefix for VPN and Cloud SQL network resources"
+  type        = string
+  default     = "phase1-bank"
+}
+
+variable "database_secret_prefix" {
+  description = "Environment-unique Secrets Manager path"
+  type        = string
+  default     = "phase1/bank-db"
+}
+
 variable "cloudsql_instance_name" {
   type    = string
   default = "phase1-bank-dr-postgres"

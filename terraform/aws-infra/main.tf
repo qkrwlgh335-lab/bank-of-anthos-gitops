@@ -1,5 +1,5 @@
 locals {
-  azs                = ["${var.aws_region}a", "${var.aws_region}c"]
+  azs                = [for suffix in var.availability_zone_suffixes : "${var.aws_region}${suffix}"]
   app_repo_full      = "${var.github_owner}/${var.app_repository}"
   platform_repo_full = "${var.github_owner}/${var.platform_repository}"
   app_repo_subject   = "${var.github_owner}@${var.github_owner_id}/${var.app_repository}@${var.app_repository_id}"
@@ -25,12 +25,12 @@ module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
   version = "6.6.1"
 
-  name = "phase1-bank-vpc"
+  name = var.vpc_name
   cidr = var.vpc_cidr
 
   azs             = local.azs
-  public_subnets  = ["10.40.0.0/24", "10.40.1.0/24"]
-  private_subnets = ["10.40.10.0/24", "10.40.11.0/24"]
+  public_subnets  = var.public_subnet_cidrs
+  private_subnets = var.private_subnet_cidrs
 
   enable_dns_hostnames = true
   enable_dns_support   = true
@@ -75,7 +75,7 @@ module "eks" {
 
   eks_managed_node_groups = {
     application = {
-      name           = "phase1-bank-app"
+      name           = var.node_group_name
       min_size       = 2
       max_size       = 4
       desired_size   = 2
@@ -116,25 +116,14 @@ module "eks" {
   }
 }
 
-resource "aws_vpc_security_group_ingress_rule" "rds_from_eks_nat" {
-  count = var.rds_security_group_id == "" ? 0 : 1
-
-  security_group_id = var.rds_security_group_id
-  description       = "PostgreSQL from phase1 EKS fixed NAT egress IP"
-  cidr_ipv4         = "${module.vpc.nat_public_ips[0]}/32"
-  from_port         = 5432
-  to_port           = 5432
-  ip_protocol       = "tcp"
-}
-
 resource "aws_secretsmanager_secret" "runtime" {
-  name                    = "phase1/bank-app/runtime"
+  name                    = "${var.runtime_secret_prefix}/runtime"
   description             = "Runtime database and Redis connection values for Bank of Anthos"
   recovery_window_in_days = 0
 }
 
 resource "aws_secretsmanager_secret" "jwt" {
-  name                    = "phase1/bank-app/jwt"
+  name                    = "${var.runtime_secret_prefix}/jwt"
   description             = "Bank of Anthos RS256 private/public key pair"
   recovery_window_in_days = 0
 }

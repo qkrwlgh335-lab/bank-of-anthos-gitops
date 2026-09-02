@@ -30,7 +30,7 @@ data "aws_iam_policy_document" "app_ci_trust" {
 }
 
 resource "aws_iam_role" "github_app_ci" {
-  name               = "phase1-github-app-ci"
+  name               = "${var.resource_name_prefix}-github-app-ci"
   assume_role_policy = data.aws_iam_policy_document.app_ci_trust.json
 }
 
@@ -90,7 +90,7 @@ data "aws_iam_policy_document" "terraform_trust" {
 }
 
 resource "aws_iam_role" "github_terraform" {
-  name               = "phase1-github-terraform"
+  name               = "${var.resource_name_prefix}-github-terraform"
   assume_role_policy = data.aws_iam_policy_document.terraform_trust.json
 }
 

@@ -6,7 +6,14 @@ provider "aws" {
   }
 }
 
-data "aws_caller_identity" "current" {}
+data "aws_caller_identity" "current" {
+  lifecycle {
+    postcondition {
+      condition     = self.account_id == var.aws_account_id
+      error_message = "Refusing to manage AWS resources outside the approved kdn10 account ${var.aws_account_id}."
+    }
+  }
+}
 data "aws_partition" "current" {}
 
 data "tls_certificate" "github" {

@@ -2,6 +2,15 @@ provider "aws" {
   region = var.aws_region
 }
 
+data "aws_caller_identity" "current" {
+  lifecycle {
+    postcondition {
+      condition     = self.account_id == var.aws_account_id
+      error_message = "Refusing to manage AWS add-ons outside account ${var.aws_account_id}."
+    }
+  }
+}
+
 data "terraform_remote_state" "infra" {
   backend = "s3"
   config = {

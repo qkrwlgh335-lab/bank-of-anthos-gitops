@@ -28,12 +28,12 @@ data "aws_iam_policy_document" "irsa_trust" {
 }
 
 resource "aws_iam_role" "load_balancer_controller" {
-  name               = "phase1-eks-load-balancer-controller"
+  name               = "${var.resource_name_prefix}-eks-load-balancer-controller"
   assume_role_policy = data.aws_iam_policy_document.irsa_trust["load_balancer_controller"].json
 }
 
 resource "aws_iam_policy" "load_balancer_controller" {
-  name   = "phase1-eks-load-balancer-controller"
+  name   = "${var.resource_name_prefix}-eks-load-balancer-controller"
   policy = file("${path.module}/policies/aws-load-balancer-controller.json")
 }
 
@@ -43,7 +43,7 @@ resource "aws_iam_role_policy_attachment" "load_balancer_controller" {
 }
 
 resource "aws_iam_role" "external_secrets" {
-  name               = "phase1-eks-external-secrets"
+  name               = "${var.resource_name_prefix}-eks-external-secrets"
   assume_role_policy = data.aws_iam_policy_document.irsa_trust["external_secrets"].json
 }
 

@@ -3,6 +3,12 @@ variable "project_id" {
   default = "kdt4-1-506106"
 }
 
+variable "approved_project_id" {
+  description = "Safety lock: approved GCP project"
+  type        = string
+  default     = "kdt4-1-506106"
+}
+
 variable "region" {
   type    = string
   default = "asia-northeast3"
