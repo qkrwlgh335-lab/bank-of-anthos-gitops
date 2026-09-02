@@ -28,4 +28,10 @@ flowchart LR
 AWS는 GitHub OIDC + IAM Role, GCP는 Workload Identity Federation을 사용합니다. 장기
 Access Key/Service Account JSON은 GitHub에 저장하지 않습니다.
 
-상세 설정은 [GitHub 설정](docs/github-setup.md)과 [실행 Runbook](docs/runbook.md)을 봅니다.
+상세 내용:
+
+- [실제 CI/CD 구동 및 검증 결과](docs/cicd-validation.md)
+- [IaC 코드와 state 정리](docs/iac-inventory.md)
+- [GitHub 설정](docs/github-setup.md)
+- [실행 Runbook](docs/runbook.md)
+- [승인형 GCP DR 설계](docs/dr-approval-design.md)

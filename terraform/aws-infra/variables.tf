@@ -28,6 +28,12 @@ variable "node_instance_types" {
   default     = ["t3.medium"]
 }
 
+variable "cluster_admin_principal_arn" {
+  description = "Stable operator principal that retains EKS and KMS administration regardless of who runs Terraform"
+  type        = string
+  default     = "arn:aws:iam::558807819624:user/kdn10"
+}
+
 variable "github_owner" {
   type    = string
   default = "qkrwlgh335-lab"

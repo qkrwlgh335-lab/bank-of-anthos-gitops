@@ -54,8 +54,14 @@ module "eks" {
   kubernetes_version = var.kubernetes_version
 
   endpoint_public_access                   = true
-  enable_cluster_creator_admin_permissions = true
+  enable_cluster_creator_admin_permissions = false
   enable_irsa                              = true
+
+  # Keep key administration stable when Terraform runs locally or through GitHub OIDC.
+  kms_key_administrators = [
+    var.cluster_admin_principal_arn,
+    aws_iam_role.github_terraform.arn,
+  ]
 
   addons = {
     coredns                = { most_recent = true }
@@ -83,6 +89,19 @@ module "eks" {
   }
 
   access_entries = {
+    # Preserve the module's original state address while making the principal explicit.
+    cluster_creator = {
+      principal_arn = var.cluster_admin_principal_arn
+      policy_associations = {
+        admin = {
+          policy_arn = "arn:${data.aws_partition.current.partition}:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+          access_scope = {
+            type = "cluster"
+          }
+        }
+      }
+    }
+
     github_terraform = {
       principal_arn = aws_iam_role.github_terraform.arn
       policy_associations = {
