@@ -23,6 +23,10 @@ resource "google_artifact_registry_repository" "bank" {
   description   = "DR copy of immutable Bank of Anthos service images"
   format        = "DOCKER"
 
+  docker_config {
+    immutable_tags = true
+  }
+
   cleanup_policy_dry_run = false
   cleanup_policies {
     id     = "keep-latest-ten"
