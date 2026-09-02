@@ -161,7 +161,37 @@ jobs:
           STACK: ${{ matrix.stack }}
         run: terraform -chdir=terraform/${STACK} init -reconfigure -backend-config="${GITHUB_WORKSPACE}/terraform/environments/${DEPLOYMENT}/backend/${STACK}.hcl"
 
+      - name: Check live prerequisite for cluster add-on plan
+        id: prerequisite
+        shell: bash
+        env:
+          DEPLOYMENT: ${{ matrix.deployment }}
+          STACK: ${{ matrix.stack }}
+        run: |
+          set -Eeuo pipefail
+          ready=true
+          if [[ "$STACK" == "aws-addons" ]]; then
+            source_vars="terraform/environments/${DEPLOYMENT}/aws-infra.tfvars"
+            cluster=$(sed -nE 's/^[[:space:]]*cluster_name[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$source_vars" | head -n 1)
+            region=$(sed -nE 's/^[[:space:]]*aws_region[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$source_vars" | head -n 1)
+            if ! aws eks describe-cluster --name "$cluster" --region "$region" >/dev/null 2>&1; then
+              ready=false
+              echo "aws-addons plan deferred: prerequisite EKS $cluster is absent; apply aws-infra first" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          elif [[ "$STACK" == "gcp-addons" ]]; then
+            source_vars="terraform/environments/${DEPLOYMENT}/gcp-dr.tfvars"
+            cluster=$(sed -nE 's/^[[:space:]]*cluster_name[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$source_vars" | head -n 1)
+            region=$(sed -nE 's/^[[:space:]]*region[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$source_vars" | head -n 1)
+            project=$(sed -nE 's/^[[:space:]]*project_id[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$source_vars" | head -n 1)
+            if ! gcloud container clusters describe "$cluster" --region "$region" --project "$project" >/dev/null 2>&1; then
+              ready=false
+              echo "gcp-addons plan deferred: prerequisite GKE $cluster is absent; apply gcp-dr first" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+
       - name: Create speculative plan
+        if: steps.prerequisite.outputs.ready == 'true'
         env:
           DEPLOYMENT: ${{ matrix.deployment }}
           STACK: ${{ matrix.stack }}
