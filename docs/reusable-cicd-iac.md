@@ -38,8 +38,8 @@ GKE는 `REGULAR` release channel과 auto-upgrade를 의도적으로 사용한다
 4. `aws-addons`, `gcp-addons`를 apply한다. 이 두 root는 각 cluster remote state에 의존한다.
 5. `Database DR bootstrap and CDC validation`을 `bootstrap-source` → `create-dms` →
    `validate-cdc` → `readiness` 순서로 실행한다.
-6. 앱 CI가 서비스별 test/build/Trivy를 통과한 동일 이미지를 ECR과 GAR에 저장하고, GitOps
-   desired state를 변경한다.
+6. 앱 CI가 서비스별 test/build/Trivy를 통과한 동일 이미지를 ECR과 GAR에 저장하고 GitOps
+   promotion PR을 만든다. 필수 check가 성공하면 auto-merge되어 desired state가 변경된다.
 7. Argo CD가 AWS EKS desired state를 동기화한다. 실제 장애 선언 때만 `gcp-dr-approval`
    Environment 승인 뒤 GCP failover workflow를 실행한다.
 
@@ -75,7 +75,7 @@ Terraform workflow의 concurrency key는 deployment 단위다. 따라서 같은 
 코드만으로 만들 수 없거나 의도적으로 bootstrap 외부에 둔 항목은 다음과 같다.
 
 - GitHub repository, Environment reviewer, branch protection, Actions variables/secrets
-- 앱 저장소가 GitOps 저장소를 변경할 최소 권한 credential
+- 앱 저장소가 GitOps 저장소에 branch/PR을 만들 최소 권한 credential
 - Google DMS migration job/connection profile(상태 기반 workflow가 관리)
 - DNS failover(현재 범위 제외)
 
@@ -85,8 +85,12 @@ Terraform workflow의 concurrency key는 deployment 단위다. 따라서 같은 
 
 앱 CI의 `GITOPS_TOKEN`은 만료되었거나 유효하지 않으면 이미지 publish까지 성공하고 GitOps
 promotion만 실패한다. Fine-grained PAT를 쓸 경우 GitOps 저장소 하나에만 `Contents: Read and
-write`를 부여하고 만료일을 관리한다. 장기 운영에서는 GitHub App installation token으로
-교체한다.
+write`, `Pull requests: Read and write`를 부여하고 만료일을 관리한다. 장기 운영에서는
+GitHub App installation token으로 교체한다.
+
+앱 promotion과 승인된 DR activation/restore도 main에 직접 push하지 않는다. 작업 branch와
+PR을 만들고 required check를 통과한 뒤 auto-merge한다. 따라서 main branch rule의 관리자
+강제를 켜도 자동화가 동작하며, 저장소 소유자의 실수로 check를 우회하는 경로를 제거할 수 있다.
 
 ## 검증 기준
 

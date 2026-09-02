@@ -200,6 +200,7 @@ jobs:
         env:
           TAG: ${{ inputs.image_tag }}
           INCIDENT_ID: ${{ inputs.incident_id }}
+          GH_TOKEN: ${{ secrets.GITOPS_TOKEN }}
         run: |
           set -Eeuo pipefail
           git pull --ff-only origin main
@@ -210,7 +211,10 @@ jobs:
           git config user.email "dr-platform-drill-bot@users.noreply.github.com"
           git add gitops/apps/bank-of-anthos/overlays/gcp-dr/kustomization.yaml
           git commit -m "drill: activate GCP platform probe for ${INCIDENT_ID}"
-          git push origin HEAD:main
+          scripts/open-auto-merge-pr.sh \
+            "drill/activate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            "drill: activate GCP platform probe for ${INCIDENT_ID}" \
+            "Approved platform drill. Incident/change ID: ${INCIDENT_ID}."
           echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Reconcile and verify all six release images on GKE
@@ -271,6 +275,7 @@ jobs:
         env:
           TAG: ${{ inputs.image_tag }}
           ORIGINAL_NODES: ${{ steps.capacity.outputs.original_nodes }}
+          GH_TOKEN: ${{ secrets.GITOPS_TOKEN }}
         run: |
           set +e
           failed=0
@@ -281,7 +286,10 @@ jobs:
           git add gitops/apps/bank-of-anthos/overlays/gcp-dr/kustomization.yaml
           if ! git diff --cached --quiet; then
             git commit -m "drill: restore GCP pilot-light state" || failed=1
-            git push origin HEAD:main || failed=1
+            scripts/open-auto-merge-pr.sh \
+              "drill/restore-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+              "drill: restore GCP pilot-light state" \
+              "Automatic restoration after approved platform drill run ${GITHUB_RUN_ID}." || failed=1
           fi
           kubectl -n argocd annotate application bank-of-anthos-gcp-dr \
             argocd.argoproj.io/refresh=hard --overwrite || failed=1
@@ -447,6 +455,7 @@ jobs:
         env:
           TAG: ${{ inputs.image_tag }}
           INCIDENT_ID: ${{ inputs.incident_id }}
+          GH_TOKEN: ${{ secrets.GITOPS_TOKEN }}
         run: |
           set -Eeuo pipefail
           git pull --ff-only origin main
@@ -456,7 +465,10 @@ jobs:
           git add gitops/apps/bank-of-anthos/overlays/gcp-dr/kustomization.yaml
           if ! git diff --cached --quiet; then
             git commit -m "dr: activate GCP for ${INCIDENT_ID} with ${TAG}"
-            git push origin HEAD:main
+            scripts/open-auto-merge-pr.sh \
+              "dr/failover-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+              "dr: activate GCP for ${INCIDENT_ID} with ${TAG}" \
+              "Approved DR activation. Incident ID: ${INCIDENT_ID}; immutable tag: ${TAG}."
           else
             echo "GCP overlay already contains the approved tag and replica count"
           fi

@@ -3,9 +3,6 @@ name: Terraform plan and apply
 on:
   pull_request:
     branches: [main]
-    paths:
-      - "terraform/**"
-      - ".github/workflows/terraform.yml"
   workflow_dispatch:
     inputs:
       deployment:
@@ -47,8 +44,34 @@ env:
   TF_INPUT: "false"
 
 jobs:
+  terraform-changes:
+    name: Detect Terraform changes
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.detect.outputs.changed }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - id: detect
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -Eeuo pipefail
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "$BASE_SHA" "$GITHUB_SHA" -- terraform .github/workflows/terraform.yml; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
   static-checks:
     name: Format and validate / ${{ matrix.stack }}
+    needs: terraform-changes
+    if: github.event_name == 'workflow_dispatch' || needs.terraform-changes.outputs.changed == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -69,8 +92,8 @@ jobs:
 
   pull-request-plan:
     name: PR plan / phase1 / ${{ matrix.stack }}
-    if: github.event_name == 'pull_request'
-    needs: static-checks
+    if: github.event_name == 'pull_request' && needs.terraform-changes.outputs.changed == 'true'
+    needs: [terraform-changes, static-checks]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -118,7 +141,7 @@ jobs:
   dispatch-plan:
     name: ${{ inputs.deployment }} / ${{ inputs.stack }} / saved plan
     if: github.event_name == 'workflow_dispatch'
-    needs: static-checks
+    needs: [terraform-changes, static-checks]
     runs-on: ubuntu-latest
     outputs:
       artifact_name: ${{ steps.plan-metadata.outputs.artifact_name }}
@@ -239,16 +262,23 @@ jobs:
   terraform-required-gate:
     name: Terraform required gate
     if: always()
-    needs: [static-checks, pull-request-plan]
+    needs: [terraform-changes, static-checks, pull-request-plan]
     runs-on: ubuntu-latest
     steps:
       - name: Evaluate Terraform checks
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
+          TERRAFORM_CHANGED: ${{ needs.terraform-changes.outputs.changed }}
+          CHANGE_DETECTOR_RESULT: ${{ needs.terraform-changes.result }}
           STATIC_CHECK_RESULT: ${{ needs.static-checks.result }}
           PR_PLAN_RESULT: ${{ needs.pull-request-plan.result }}
         run: |
+          [[ "$CHANGE_DETECTOR_RESULT" == "success" ]] || { echo "Terraform change detection failed"; exit 1; }
+          if [[ "$EVENT_NAME" == "pull_request" && "$TERRAFORM_CHANGED" != "true" ]]; then
+            echo "No Terraform changes; required gate passed"
+            exit 0
+          fi
           [[ "$STATIC_CHECK_RESULT" == "success" ]] || { echo "Terraform format or validation failed"; exit 1; }
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             [[ "$PR_PLAN_RESULT" == "success" ]] || { echo "One or more Terraform plans failed"; exit 1; }
