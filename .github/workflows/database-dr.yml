@@ -251,8 +251,23 @@ jobs:
             '{ACCOUNTS_DB_URI:$accounts,SPRING_DATASOURCE_URL:$ledger_url,SPRING_DATASOURCE_USERNAME:"ledger_admin",SPRING_DATASOURCE_PASSWORD:$ledger_password,REDIS_URL:"redis://redis:6379/0"}')
           put_aws_secret_if_changed phase1/bank-app/runtime "$runtime_json"
 
+          jwt_json=$(aws secretsmanager get-secret-value --secret-id phase1/bank-app/jwt \
+            --query SecretString --output text 2>/dev/null || true)
+          if [[ -z "$jwt_json" || "$jwt_json" == "None" ]] || \
+             [[ "$(jq -r 'has("jwtRS256.key") and has("jwtRS256.key.pub")' <<<"$jwt_json" 2>/dev/null || true)" != "true" ]]; then
+            umask 077
+            private_key="$RUNNER_TEMP/jwtRS256.key"
+            public_key="$RUNNER_TEMP/jwtRS256.key.pub"
+            openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$private_key" 2>/dev/null
+            openssl pkey -in "$private_key" -pubout -out "$public_key" 2>/dev/null
+            jwt_json=$(jq -cn --rawfile private "$private_key" --rawfile public "$public_key" \
+              '{"jwtRS256.key":$private,"jwtRS256.key.pub":$public}')
+          fi
+          put_aws_secret_if_changed phase1/bank-app/jwt "$jwt_json"
+
           add_gcp_secret_version_if_changed phase1-bank-dms-source "$dms_json"
           add_gcp_secret_version_if_changed phase1-bank-app-db "$app_json"
+          add_gcp_secret_version_if_changed phase1-bank-app-jwt "$jwt_json"
 
           cloudsql_password=$(gcloud secrets versions access latest \
             --secret phase1-bank-cloudsql-admin --project "$GCP_PROJECT_ID" 2>/dev/null || true)
@@ -300,6 +315,11 @@ jobs:
               --display-name="Phase 1 private RDS PostgreSQL source" --role=SOURCE \
               --host="$RDS_HOST" --port=5432 --username="$dms_user" --password="$dms_password" \
               --ssl-type=REQUIRED
+          else
+            gcloud database-migration connection-profiles update "$DMS_SOURCE_PROFILE" \
+              --region "$GCP_REGION" --project "$GCP_PROJECT_ID" --quiet \
+              --host="$RDS_HOST" --port=5432 --username="$dms_user" --password="$dms_password" \
+              --ssl-type=REQUIRED
           fi
 
           if ! gcloud database-migration connection-profiles describe "$DMS_DESTINATION_PROFILE" \
@@ -307,6 +327,10 @@ jobs:
             gcloud database-migration connection-profiles create postgresql "$DMS_DESTINATION_PROFILE" \
               --region "$GCP_REGION" --project "$GCP_PROJECT_ID" --no-async \
               --display-name="Phase 1 private Cloud SQL PostgreSQL destination" --role=DESTINATION \
+              --cloudsql-instance="$CLOUD_SQL_INSTANCE"
+          else
+            gcloud database-migration connection-profiles update "$DMS_DESTINATION_PROFILE" \
+              --region "$GCP_REGION" --project "$GCP_PROJECT_ID" --quiet \
               --cloudsql-instance="$CLOUD_SQL_INSTANCE"
           fi
 
