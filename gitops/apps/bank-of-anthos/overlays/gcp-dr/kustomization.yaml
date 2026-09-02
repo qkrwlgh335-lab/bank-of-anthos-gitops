@@ -47,7 +47,7 @@ replicas:
   - name: redis
     count: 0
   - name: dr-platform-probe
-    count: 1
+    count: 0
 
 patches:
   # DR-ACTIVATION-PATCH: the approved failover workflow adds frontend-neg-patch.yaml here.
