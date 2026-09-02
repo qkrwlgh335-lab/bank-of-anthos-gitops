@@ -44,7 +44,6 @@ file은 각 stack에 커밋한다.
 - GitHub Terraform용 OIDC role과 EKS access entry
 - ALB Controller와 External Secrets용 IRSA role
 - runtime/JWT Secrets Manager secret 컨테이너
-- 기존 RDS security group에 NAT EIP `/32` PostgreSQL ingress
 
 관리자 principal은 `cluster_admin_principal_arn`으로 고정한다. 이를 명시하지 않고
 `enable_cluster_creator_admin_permissions=true`를 사용하면 로컬 사용자와 GitHub OIDC 중
@@ -77,9 +76,9 @@ GitOps 저장소를 pull해 배포한다.
   Secret Manager 컨테이너, GKE Workload Identity, DR/Terraform OIDC service account
 - `gcp-addons`: GCP GKE 내부 Argo CD와 External Secrets Operator
 
-실제 적용 후 GKE node 1대 Ready, Argo CD와 External Secrets의 모든 Pod Running,
-Application `Synced / Healthy`, 업무 replicas 0을 확인했다. Cloud SQL과 DMS는 이 state에
-포함하지 않는다.
+이전 platform drill에서 GKE node 1대 Ready, Argo CD와 External Secrets Pod Running,
+Application `Synced / Healthy`, 업무 replicas 0을 확인했다. Cloud SQL과 VPN은 별도
+`dr-data` state가 소유하고 DMS job/profile은 workflow가 관리한다.
 
 ## `dr-data`
 
@@ -106,7 +105,7 @@ Application `Synced / Healthy`, 업무 replicas 0을 확인했다. Cloud SQL과 
 - 같은 deployment의 stack apply는 concurrency group으로 직렬화
 - 앱 CI와 Terraform workflow는 서로 다른 IAM role 사용
 
-검증 실행:
+과거 정상 상태에서의 검증 실행:
 
 - [최종 aws-infra plan run 33573683695](https://github.com/qkrwlgh335-lab/bank-of-anthos-gitops/actions/runs/33573683695):
   `0 add, 1 change, 0 destroy`
@@ -115,7 +114,12 @@ Application `Synced / Healthy`, 업무 replicas 0을 확인했다. Cloud SQL과 
 첫 aws-infra 실행에서 실행 주체 의존 access/KMS drift를 발견했고 코드에서 제거했다. 최종
 plan에는 EKS access entry 교체와 destroy가 없다. 남은 1개 in-place 변경은 KMS 관리자
 목록에 Terraform OIDC role을 명시적으로 추가하는 정책 변경이다. 이 변경은
-`infrastructure-production` 승인 후에만 apply하며, 이 문서 작성 중에는 apply하지 않았다.
+  `infrastructure-production` 승인 후에만 apply하며, 이 문서 작성 중에는 apply하지 않았다.
+
+현재는 EKS가 콘솔에서 삭제된 상태이므로 [재사용성 검증 plan run 33658283575](https://github.com/qkrwlgh335-lab/bank-of-anthos-gitops/actions/runs/33658283575)이
+`12 add, 3 change, 3 destroy`를 표시한다. 이는 같은 이름 충돌이 아니라 실제 리소스와 state의
+불일치를 복구하는 plan이다. EKS cluster/node/add-on/access entry 재생성과 삭제된 cluster에
+종속된 OIDC provider 교체를 포함하므로 자동 apply하지 않는다.
 
 ## 현재 PoC에서 의도적으로 단순화한 부분
 
@@ -126,13 +130,12 @@ plan에는 EKS access entry 교체와 destroy가 없다. 남은 1개 in-place �
 - Terraform OIDC role의 `AdministratorAccess`: 부트스트랩용이며 서비스별 최소 권한으로
   축소해야 한다.
 - Secrets Manager 즉시 삭제와 ECR `force_delete`: 반복 실습용이며 운영 보존정책과 다르다.
-- RDS는 기존 PoC 자산 연결: 최종 인프라팀 RDS module/state로 소유권을 옮겨야 한다.
+- RDS/Cloud SQL의 deletion protection과 final snapshot은 반복 실습용으로 비활성화되어 있다.
 
 ## 다음 구현 우선순위
 
-1. KMS 관리자 정책 1건의 in-place plan을 검토하고 승인 apply 여부 결정
-2. branch protection과 CI required check 적용
+1. 기존 GAR/WIF의 Terraform import에 필요한 GCP 권한 승인
+2. 앱/GitOps `GITOPS_TOKEN`을 최소 권한 GitHub App 또는 새 fine-grained PAT로 교체
 3. Terraform role 최소 권한화
-4. 기존 GAR/WIF의 Terraform import에 필요한 GCP 권한 승인
-5. private DB/VPN/DMS와 승인형 DR을 비운영 훈련으로 재검증
-6. RTO/RPO, DMS lag, 승인 시간을 한 타임라인으로 계측
+4. private DB/VPN/DMS와 승인형 DR을 비운영 훈련으로 재검증
+5. RTO/RPO, DMS lag, 승인 시간을 한 타임라인으로 계측

@@ -1,6 +1,6 @@
 # Phase 1 CI/CD·DR 보완 상태
 
-기준 시각: 2026-09-02 KST
+기준 시각: 2026-09-03 KST
 
 ## 판정 요약
 
@@ -16,6 +16,16 @@
 | DNS 장애조치 | 미구현 | 설계 승인, 도메인, Cloudflare 권한을 받은 뒤 구현 |
 
 ## 최종 실행 증거
+
+- [공급망 고정 후 전체 6개 CI run 33658940803](https://github.com/qkrwlgh335-lab/bank-of-anthos-app/actions/runs/33658940803):
+  여섯 서비스 test/build, HIGH/CRITICAL gate, ECR/GAR publish, `CI required gate`는 성공했다.
+  기존 앱 저장소 `GITOPS_TOKEN` 인증 실패로 promotion checkout만 실패했으며 새 최소 권한
+  credential 등록 전까지 CD 완료로 판정하지 않는다.
+- [고정 Terraform 1.14.3 plan run 33658283575](https://github.com/qkrwlgh335-lab/bank-of-anthos-gitops/actions/runs/33658283575):
+  여섯 root fmt/validate와 aws-infra plan 성공. EKS가 외부 삭제되어 복구 plan이 발생했으므로
+  apply하지 않았다.
+- [보호 PR required-gate run 33659560225](https://github.com/qkrwlgh335-lab/bank-of-anthos-gitops/actions/runs/33659560225):
+  비-Terraform GitOps 변경에서도 `Terraform required gate`가 성공했고 PR #1만 main에 merge됐다.
 
 - [최종 전체 6개 CI run 33596476481](https://github.com/qkrwlgh335-lab/bank-of-anthos-app/actions/runs/33596476481):
   최신 main에서 6개 test/build, HIGH/CRITICAL gate, ECR/GAR push, `CI required gate`,
@@ -93,21 +103,21 @@ build 또는 수정 가능한 HIGH/CRITICAL 스캔에 실패하면 이 체크가
 OS 패키지는 보안 업데이트하고, Python builder의 `uv`는 최종 이미지에서 제거했으며,
 Java는 distroless 런타임과 수정된 Netty/PostgreSQL JDBC 버전을 사용한다.
 
-플랫폼 저장소의 고정 필수 체크는 `Terraform required gate`다. 다섯 root
-(`aws-infra`, `aws-addons`, `gcp-cicd`, `gcp-dr`, `gcp-addons`)의 fmt/validate를 하나로
+플랫폼 저장소의 고정 필수 체크는 `Terraform required gate`다. 여섯 root
+(`aws-infra`, `aws-addons`, `gcp-cicd`, `gcp-dr`, `gcp-addons`, `dr-data`)의 fmt/validate를 하나로
 집계한다.
 
 두 저장소 main branch protection의 현재 값:
 
 - strict required status check: 활성
-- PR 경로: 활성, 승인자 수 0
+- PR 경로: 활성, 승인자 수 0(자동 promotion/DR PR은 required check로 통제)
 - force push / branch deletion: 금지
 - 대화 해결 / linear history: 필수
-- 관리자 강제: 비활성
+- 관리자 강제: 활성
 
-관리자 강제를 끈 이유는 현재 collaborator가 저장소 소유자 한 명이고 app CI의 GitOps
-자동 커밋도 그 단기 PAT를 사용하기 때문이다. 팀원을 추가하면 승인자 1명, 관리자 강제로
-올리고 GitOps 승격은 GitHub App 또는 전용 bypass actor로 바꾼다.
+앱 promotion과 승인된 DR activation/restore도 main 직접 push 대신 branch/PR/auto-merge를
+사용한다. 따라서 저장소 소유자도 required check를 우회할 수 없다. 인프라 PR의 사람 승인자
+수를 1명으로 올리는 것은 실제 reviewer가 정해진 뒤 적용한다.
 
 PoC의 승인 Job용 `GITOPS_TOKEN`은 저장소 전체가 아니라 `gcp-dr-approval` Environment
 secret으로 제한했다. 장기 운영에서는 개인 OAuth/PAT 대신 GitHub App 또는 전용 bot의
