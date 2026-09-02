@@ -3,6 +3,16 @@ name: Database DR bootstrap and CDC validation
 on:
   workflow_dispatch:
     inputs:
+      deployment:
+        description: Isolated deployment name; maps to its GitHub approval environment and resource variables
+        required: true
+        default: phase1
+        type: string
+      name_prefix:
+        description: Environment-unique resource prefix
+        required: true
+        default: phase1-bank
+        type: string
       mode:
         description: Approved database operation
         required: true
@@ -26,38 +36,48 @@ permissions:
   id-token: write
 
 concurrency:
-  group: phase1-database-dr
+  group: ${{ inputs.deployment }}-database-dr
   cancel-in-progress: false
-
-env:
-  AWS_ACCOUNT_ID: "558807819624"
-  AWS_REGION: ap-northeast-2
-  RDS_INSTANCE: phase1-bank-postgres
-  EKS_CLUSTER: phase1-bank-eks
-  GCP_PROJECT_ID: kdt4-1-506106
-  GCP_REGION: asia-northeast3
-  GCP_NETWORK: phase1-bank-dr-vpc
-  CLOUD_SQL_INSTANCE: phase1-bank-dr-postgres
-  GKE_CLUSTER: phase1-bank-gke
-  DMS_SOURCE_PROFILE: phase1-bank-rds-source
-  DMS_DESTINATION_PROFILE: phase1-bank-cloudsql-destination
-  DMS_MIGRATION_JOB: phase1-bank-rds-to-cloudsql
-  POSTGRES_IMAGE: postgres:16.14-alpine@sha256:e013e867e712fec275706a6c51c966f0bb0c93cfa8f51000f85a15f9865a28cb
 
 jobs:
   database-dr:
     name: ${{ inputs.mode }} / approved
     runs-on: ubuntu-latest
-    environment: infrastructure-production
+    environment: ${{ inputs.deployment == 'phase1' && 'infrastructure-production' || format('infrastructure-{0}', inputs.deployment) }}
+    env:
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID || '558807819624' }}
+      AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
+      RDS_INSTANCE: ${{ vars.RDS_INSTANCE || format('{0}-postgres', inputs.name_prefix) }}
+      EKS_CLUSTER: ${{ vars.EKS_CLUSTER || format('{0}-eks', inputs.name_prefix) }}
+      AWS_DB_SECRET_PREFIX: ${{ vars.AWS_DB_SECRET_PREFIX || 'phase1/bank-db' }}
+      AWS_APP_SECRET_PREFIX: ${{ vars.AWS_APP_SECRET_PREFIX || 'phase1/bank-app' }}
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'kdt4-1-506106' }}
+      GCP_REGION: ${{ vars.GCP_REGION || 'asia-northeast3' }}
+      GCP_NETWORK: ${{ vars.GCP_NETWORK || format('{0}-dr-vpc', inputs.name_prefix) }}
+      CLOUD_SQL_INSTANCE: ${{ vars.GCP_CLOUD_SQL_INSTANCE || format('{0}-dr-postgres', inputs.name_prefix) }}
+      GKE_CLUSTER: ${{ vars.GKE_CLUSTER || format('{0}-gke', inputs.name_prefix) }}
+      GCP_SECRET_PREFIX: ${{ vars.GCP_SECRET_PREFIX || inputs.name_prefix }}
+      DMS_SOURCE_PROFILE: ${{ vars.GCP_DMS_SOURCE_PROFILE || format('{0}-rds-source', inputs.name_prefix) }}
+      DMS_DESTINATION_PROFILE: ${{ vars.GCP_DMS_DESTINATION_PROFILE || format('{0}-cloudsql-destination', inputs.name_prefix) }}
+      DMS_MIGRATION_JOB: ${{ vars.GCP_MIGRATION_JOB || format('{0}-rds-to-cloudsql', inputs.name_prefix) }}
+      POSTGRES_IMAGE: postgres:16.14-alpine@sha256:e013e867e712fec275706a6c51c966f0bb0c93cfa8f51000f85a15f9865a28cb
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Validate explicit operator intent
         env:
+          DEPLOYMENT: ${{ inputs.deployment }}
+          NAME_PREFIX: ${{ inputs.name_prefix }}
           MODE: ${{ inputs.mode }}
           CONFIRMATION: ${{ inputs.confirmation }}
         run: |
           set -Eeuo pipefail
+          [[ "$DEPLOYMENT" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]] || { echo "Invalid deployment: $DEPLOYMENT"; exit 1; }
+          [[ "$NAME_PREFIX" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || { echo "Invalid name_prefix: $NAME_PREFIX"; exit 1; }
+          if [[ "$DEPLOYMENT" != "phase1" ]]; then
+            [[ "$AWS_DB_SECRET_PREFIX" != "phase1/bank-db" ]] || { echo "Set an environment-specific AWS_DB_SECRET_PREFIX"; exit 1; }
+            [[ "$AWS_APP_SECRET_PREFIX" != "phase1/bank-app" ]] || { echo "Set an environment-specific AWS_APP_SECRET_PREFIX"; exit 1; }
+          fi
           if [[ "$MODE" == "bootstrap-source" || "$MODE" == "create-dms" ]]; then
             [[ "$CONFIRMATION" == "APPLY-DB-DR" ]] || { echo "Enter APPLY-DB-DR"; exit 1; }
           elif [[ "$MODE" == "validate-cdc" ]]; then
@@ -182,7 +202,7 @@ jobs:
           master_password=$(jq -r '.password' <<<"$master_json")
           echo "::add-mask::$master_password"
 
-          app_json=$(aws secretsmanager get-secret-value --secret-id phase1/bank-db/app \
+          app_json=$(aws secretsmanager get-secret-value --secret-id "$AWS_DB_SECRET_PREFIX/app" \
             --query SecretString --output text 2>/dev/null || true)
           if [[ -n "$app_json" && "$app_json" != "None" ]]; then
             accounts_password=$(jq -r '.accounts_password' <<<"$app_json")
@@ -194,7 +214,7 @@ jobs:
           echo "::add-mask::$accounts_password"
           echo "::add-mask::$ledger_password"
 
-          dms_json=$(aws secretsmanager get-secret-value --secret-id phase1/bank-db/dms \
+          dms_json=$(aws secretsmanager get-secret-value --secret-id "$AWS_DB_SECRET_PREFIX/dms" \
             --query SecretString --output text 2>/dev/null || true)
           if [[ -n "$dms_json" && "$dms_json" != "None" ]]; then
             dms_password=$(jq -r '.password' <<<"$dms_json")
@@ -210,8 +230,8 @@ jobs:
             --arg host "$RDS_HOST" --arg password "$dms_password" \
             '{host:$host,port:5432,username:"dms_user",password:$password}')
 
-          put_aws_secret_if_changed phase1/bank-db/app "$app_json"
-          put_aws_secret_if_changed phase1/bank-db/dms "$dms_json"
+          put_aws_secret_if_changed "$AWS_DB_SECRET_PREFIX/app" "$app_json"
+          put_aws_secret_if_changed "$AWS_DB_SECRET_PREFIX/dms" "$dms_json"
 
           kubectl -n bank-db-admin create secret generic rds-bootstrap \
             --from-literal=PGHOST="$RDS_HOST" --from-literal=PGPORT=5432 \
@@ -249,9 +269,9 @@ jobs:
             --arg ledger_url "jdbc:postgresql://${RDS_HOST}:5432/ledger-db?sslmode=require" \
             --arg ledger_password "$ledger_password" \
             '{ACCOUNTS_DB_URI:$accounts,SPRING_DATASOURCE_URL:$ledger_url,SPRING_DATASOURCE_USERNAME:"ledger_admin",SPRING_DATASOURCE_PASSWORD:$ledger_password,REDIS_URL:"redis://redis:6379/0"}')
-          put_aws_secret_if_changed phase1/bank-app/runtime "$runtime_json"
+          put_aws_secret_if_changed "$AWS_APP_SECRET_PREFIX/runtime" "$runtime_json"
 
-          jwt_json=$(aws secretsmanager get-secret-value --secret-id phase1/bank-app/jwt \
+          jwt_json=$(aws secretsmanager get-secret-value --secret-id "$AWS_APP_SECRET_PREFIX/jwt" \
             --query SecretString --output text 2>/dev/null || true)
           if [[ -z "$jwt_json" || "$jwt_json" == "None" ]] || \
              [[ "$(jq -r 'has("jwtRS256.key") and has("jwtRS256.key.pub")' <<<"$jwt_json" 2>/dev/null || true)" != "true" ]]; then
@@ -263,17 +283,17 @@ jobs:
             jwt_json=$(jq -cn --rawfile private "$private_key" --rawfile public "$public_key" \
               '{"jwtRS256.key":$private,"jwtRS256.key.pub":$public}')
           fi
-          put_aws_secret_if_changed phase1/bank-app/jwt "$jwt_json"
+          put_aws_secret_if_changed "$AWS_APP_SECRET_PREFIX/jwt" "$jwt_json"
 
-          add_gcp_secret_version_if_changed phase1-bank-dms-source "$dms_json"
-          add_gcp_secret_version_if_changed phase1-bank-app-db "$app_json"
-          add_gcp_secret_version_if_changed phase1-bank-app-jwt "$jwt_json"
+          add_gcp_secret_version_if_changed "$GCP_SECRET_PREFIX-dms-source" "$dms_json"
+          add_gcp_secret_version_if_changed "$GCP_SECRET_PREFIX-app-db" "$app_json"
+          add_gcp_secret_version_if_changed "$GCP_SECRET_PREFIX-app-jwt" "$jwt_json"
 
           cloudsql_password=$(gcloud secrets versions access latest \
-            --secret phase1-bank-cloudsql-admin --project "$GCP_PROJECT_ID" 2>/dev/null || true)
+            --secret "$GCP_SECRET_PREFIX-cloudsql-admin" --project "$GCP_PROJECT_ID" 2>/dev/null || true)
           if [[ -z "$cloudsql_password" ]]; then
             cloudsql_password=$(openssl rand -hex 24)
-            add_gcp_secret_version_if_changed phase1-bank-cloudsql-admin "$cloudsql_password"
+            add_gcp_secret_version_if_changed "$GCP_SECRET_PREFIX-cloudsql-admin" "$cloudsql_password"
           fi
           echo "::add-mask::$cloudsql_password"
           gcloud sql users set-password postgres --instance "$CLOUD_SQL_INSTANCE" \
@@ -285,7 +305,7 @@ jobs:
             --arg ledger_url "jdbc:postgresql://${cloudsql_ip}:5432/ledger-db?sslmode=require" \
             --arg ledger_password "$ledger_password" \
             '{ACCOUNTS_DB_URI:$accounts,SPRING_DATASOURCE_URL:$ledger_url,SPRING_DATASOURCE_USERNAME:"ledger_admin",SPRING_DATASOURCE_PASSWORD:$ledger_password,REDIS_URL:"redis://redis:6379/0"}')
-          add_gcp_secret_version_if_changed phase1-bank-app-runtime "$gcp_runtime"
+          add_gcp_secret_version_if_changed "$GCP_SECRET_PREFIX-app-runtime" "$gcp_runtime"
 
           echo "- Source schema: official Bank of Anthos accounts/ledger plus a PK-based CDC probe" >> "$GITHUB_STEP_SUMMARY"
           echo "- Credentials: generated and stored only in AWS/GCP secret managers" >> "$GITHUB_STEP_SUMMARY"
@@ -297,7 +317,7 @@ jobs:
           RDS_HOST: ${{ steps.inventory.outputs.rds_host }}
         run: |
           set -Eeuo pipefail
-          dms_json=$(aws secretsmanager get-secret-value --secret-id phase1/bank-db/dms \
+          dms_json=$(aws secretsmanager get-secret-value --secret-id "$AWS_DB_SECRET_PREFIX/dms" \
             --query SecretString --output text)
           dms_user=$(jq -r '.username' <<<"$dms_json")
           dms_password=$(jq -r '.password' <<<"$dms_json")
@@ -416,11 +436,11 @@ jobs:
           CLOUDSQL_IP: ${{ steps.inventory.outputs.cloudsql_ip }}
         run: |
           set -Eeuo pipefail
-          app_json=$(aws secretsmanager get-secret-value --secret-id phase1/bank-db/app \
+          app_json=$(aws secretsmanager get-secret-value --secret-id "$AWS_DB_SECRET_PREFIX/app" \
             --query SecretString --output text)
           accounts_password=$(jq -r '.accounts_password' <<<"$app_json")
           cloudsql_password=$(gcloud secrets versions access latest \
-            --secret phase1-bank-cloudsql-admin --project "$GCP_PROJECT_ID")
+            --secret "$GCP_SECRET_PREFIX-cloudsql-admin" --project "$GCP_PROJECT_ID")
           echo "::add-mask::$accounts_password"
           echo "::add-mask::$cloudsql_password"
 
