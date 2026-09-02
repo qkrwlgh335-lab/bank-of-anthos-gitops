@@ -49,6 +49,9 @@ apply와 destroy/recreate 실험을 통과하지 않았기 때문이다. 이 문
 - GitHub app run 33658940803: 6개 서비스 CI/ECR/GAR와 `CI required gate` 성공,
   cross-repository GitOps checkout 실패
 - app repository `GITOPS_TOKEN`: 2026-09-01 생성 이후 갱신되지 않음
+- hardening PR #3 run 33692922969: 6/6 format/validate 성공, aws-infra/dr-data/gcp-dr/gcp-addons
+  plan 성공, aws-addons는 EKS 선행 복구 필요 상태를 감지해 명시적으로 보류, gcp-cicd만 기존
+  GAR/WIF 조회 권한 부족으로 실패
 
 ## 최종 합격을 위한 승인형 실행 순서
 
