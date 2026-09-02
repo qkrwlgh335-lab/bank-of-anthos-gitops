@@ -13,22 +13,22 @@ resources:
 images:
   - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/frontend
     newName: asia-northeast3-docker.pkg.dev/kdt4-1-506106/bank-of-anthos/frontend
-    newTag: sha-0c42a52d25a7e2f572f8f6078055fa79fa2e5c98
+    newTag: sha-a5a94e243a17b51161229d7be85787d6e8f472c5
   - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/userservice
     newName: asia-northeast3-docker.pkg.dev/kdt4-1-506106/bank-of-anthos/userservice
-    newTag: sha-0c42a52d25a7e2f572f8f6078055fa79fa2e5c98
+    newTag: sha-a5a94e243a17b51161229d7be85787d6e8f472c5
   - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/contacts
     newName: asia-northeast3-docker.pkg.dev/kdt4-1-506106/bank-of-anthos/contacts
-    newTag: sha-0c42a52d25a7e2f572f8f6078055fa79fa2e5c98
+    newTag: sha-a5a94e243a17b51161229d7be85787d6e8f472c5
   - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/balancereader
     newName: asia-northeast3-docker.pkg.dev/kdt4-1-506106/bank-of-anthos/balancereader
-    newTag: sha-5a4825edf92152fd081f93c89cba5845bde72b9b
+    newTag: sha-a5a94e243a17b51161229d7be85787d6e8f472c5
   - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/ledgerwriter
     newName: asia-northeast3-docker.pkg.dev/kdt4-1-506106/bank-of-anthos/ledgerwriter
-    newTag: sha-5a4825edf92152fd081f93c89cba5845bde72b9b
+    newTag: sha-a5a94e243a17b51161229d7be85787d6e8f472c5
   - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/transactionhistory
     newName: asia-northeast3-docker.pkg.dev/kdt4-1-506106/bank-of-anthos/transactionhistory
-    newTag: sha-5a4825edf92152fd081f93c89cba5845bde72b9b
+    newTag: sha-a5a94e243a17b51161229d7be85787d6e8f472c5
 
 # Pilot-light: Argo CD and the cluster can remain available while business pods stay at zero.
 replicas:
@@ -47,7 +47,7 @@ replicas:
   - name: redis
     count: 0
   - name: dr-platform-probe
-    count: 0
+    count: 1
 
 patches:
   # DR-ACTIVATION-PATCH: the approved failover workflow adds frontend-neg-patch.yaml here.
