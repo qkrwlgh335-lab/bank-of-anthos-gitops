@@ -127,6 +127,32 @@ jobs:
             --kubeconfig "$RUNNER_TEMP/aws-kubeconfig" >/dev/null
           export KUBECONFIG="$RUNNER_TEMP/aws-kubeconfig"
 
+          kubectl create namespace bank-db-admin --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+          kubectl -n bank-db-admin delete pod rds-network-probe --ignore-not-found --wait=true >/dev/null
+          kubectl -n bank-db-admin run rds-network-probe \
+            --image="$POSTGRES_IMAGE" --restart=Never --env="RDS_HOST=$RDS_HOST" \
+            --command -- sh -ec '
+              for attempt in $(seq 1 12); do
+                pg_isready -h "$RDS_HOST" -p 5432 -t 5 && exit 0
+                sleep 5
+              done
+              exit 1
+            ' >/dev/null
+
+          probe_phase=""
+          for attempt in {1..60}; do
+            probe_phase=$(kubectl -n bank-db-admin get pod rds-network-probe \
+              -o jsonpath='{.status.phase}' 2>/dev/null || true)
+            [[ "$probe_phase" == "Succeeded" || "$probe_phase" == "Failed" ]] && break
+            sleep 2
+          done
+          kubectl -n bank-db-admin logs rds-network-probe || true
+          kubectl -n bank-db-admin delete pod rds-network-probe --ignore-not-found --wait=false >/dev/null
+          [[ "$probe_phase" == "Succeeded" ]] || {
+            echo "EKS worker-to-RDS TCP/5432 preflight failed (pod phase: $probe_phase)"
+            exit 1
+          }
+
           master_arn=$(aws rds describe-db-instances --db-instance-identifier "$RDS_INSTANCE" \
             --query 'DBInstances[0].MasterUserSecret.SecretArn' --output text)
           master_json=$(aws secretsmanager get-secret-value --secret-id "$master_arn" \
@@ -168,7 +194,6 @@ jobs:
           aws secretsmanager put-secret-value --secret-id phase1/bank-db/dms \
             --secret-string "$dms_json" >/dev/null
 
-          kubectl create namespace bank-db-admin --dry-run=client -o yaml | kubectl apply -f - >/dev/null
           kubectl -n bank-db-admin create secret generic rds-bootstrap \
             --from-literal=PGHOST="$RDS_HOST" --from-literal=PGPORT=5432 \
             --from-literal=PGUSER="$master_user" --from-literal=PGPASSWORD="$master_password" \
@@ -177,6 +202,7 @@ jobs:
             --from-literal=LEDGER_PASSWORD="$ledger_password" \
             --from-literal=DMS_PASSWORD="$dms_password" \
             --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+          trap 'kubectl -n bank-db-admin delete secret rds-bootstrap --ignore-not-found >/dev/null || true' EXIT
           kubectl -n bank-db-admin create configmap bank-db-bootstrap-sql \
             --from-file=database/bootstrap/00-admin.sql \
             --from-file=database/bootstrap/01-dms-grants.sql \
@@ -188,10 +214,16 @@ jobs:
             --dry-run=client -o yaml | kubectl apply -f - >/dev/null
           kubectl -n bank-db-admin delete job bank-db-bootstrap --ignore-not-found >/dev/null
           kubectl apply -f database/kubernetes/bootstrap-rds.yaml >/dev/null
-          kubectl -n bank-db-admin wait job/bank-db-bootstrap \
-            --for=condition=Complete --timeout=15m
+          if ! kubectl -n bank-db-admin wait job/bank-db-bootstrap \
+            --for=condition=Complete --timeout=15m; then
+            kubectl -n bank-db-admin describe job bank-db-bootstrap || true
+            kubectl -n bank-db-admin logs job/bank-db-bootstrap \
+              --all-containers=true --prefix=true || true
+            exit 1
+          fi
           kubectl -n bank-db-admin logs job/bank-db-bootstrap
           kubectl -n bank-db-admin delete secret rds-bootstrap >/dev/null
+          trap - EXIT
 
           runtime_json=$(jq -cn \
             --arg accounts "postgresql://accounts_admin:${accounts_password}@${RDS_HOST}:5432/accounts-db?sslmode=require" \

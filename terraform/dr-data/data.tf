@@ -39,6 +39,23 @@ data "aws_eks_cluster" "primary" {
   name = var.aws_eks_cluster_name
 }
 
+data "aws_security_group" "eks_nodes" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.primary.id]
+  }
+
+  filter {
+    name   = "tag:Name"
+    values = ["${var.aws_eks_cluster_name}-node"]
+  }
+
+  filter {
+    name   = "tag:kubernetes.io/cluster/${var.aws_eks_cluster_name}"
+    values = ["owned"]
+  }
+}
+
 data "google_compute_network" "dr" {
   name    = var.gcp_network_name
   project = var.gcp_project_id

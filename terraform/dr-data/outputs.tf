@@ -10,6 +10,11 @@ output "rds_endpoint" {
   value = aws_db_instance.primary.address
 }
 
+output "eks_node_security_group_id" {
+  description = "Worker-node security group permitted to reach the private RDS endpoint"
+  value       = data.aws_security_group.eks_nodes.id
+}
+
 output "rds_master_secret_arn" {
   value     = aws_db_instance.primary.master_user_secret[0].secret_arn
   sensitive = true
