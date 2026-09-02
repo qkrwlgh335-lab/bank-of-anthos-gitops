@@ -51,6 +51,19 @@ variable "kubernetes_version" {
   default     = "1.35"
 }
 
+variable "eks_addon_versions" {
+  description = "EKS add-on versions validated for kubernetes_version; update deliberately with the cluster version"
+  type        = map(string)
+
+  validation {
+    condition = alltrue([
+      for name in ["coredns", "kube-proxy", "vpc-cni", "eks-pod-identity-agent"] :
+      contains(keys(var.eks_addon_versions), name) && length(var.eks_addon_versions[name]) > 0
+    ])
+    error_message = "eks_addon_versions must include non-empty coredns, kube-proxy, vpc-cni, and eks-pod-identity-agent versions."
+  }
+}
+
 variable "vpc_cidr" {
   description = "CIDR for the isolated EKS VPC"
   type        = string

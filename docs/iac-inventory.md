@@ -8,11 +8,12 @@ terraform/
 ├─ aws-addons/   EKS 내부 플랫폼 add-on
 ├─ gcp-cicd/     GAR와 GitHub WIF
 ├─ gcp-dr/       GKE Pilot Light, VPC/NAT, DR IAM, Secret 컨테이너
-└─ gcp-addons/   GCP Argo CD와 External Secrets
+├─ gcp-addons/   GCP Argo CD와 External Secrets
+└─ dr-data/      Private RDS·Cloud SQL·HA VPN·DB secret container
 ```
 
-최초 적용 순서는 `state bootstrap → aws-infra → runtime secret 값 준비 → gcp-cicd → 앱 CI
-전체 빌드 → aws-addons → Argo Application bootstrap`이다. `aws-addons`는
+최초 적용 순서는 `state bootstrap → aws-infra/gcp-cicd/gcp-dr → dr-data →
+aws-addons/gcp-addons → DB bootstrap/DMS → 앱 CI → Argo Application bootstrap`이다. `aws-addons`는
 `terraform_remote_state`로 `aws-infra` 출력과 EKS 인증정보를 읽으므로 순서를 바꾸면 안 된다.
 
 ## State
@@ -24,6 +25,7 @@ terraform/
 | `gcp-cicd` | GCS `phase1-cicd-tfstate-kdt4-1-506106` | `gcp-cicd` |
 | `gcp-dr` | 같은 GCS | `gcp-dr` |
 | `gcp-addons` | 같은 GCS | `gcp-addons` |
+| `dr-data` | 같은 GCS | `dr-data` |
 
 S3 backend는 versioning, encryption, public access block과 native lockfile을 사용한다. GCS도
 versioning을 켠다. state, plan, `.terraform/`, private key는 Git에서 제외하고 provider lock
@@ -79,23 +81,29 @@ GitOps 저장소를 pull해 배포한다.
 Application `Synced / Healthy`, 업무 replicas 0을 확인했다. Cloud SQL과 DMS는 이 state에
 포함하지 않는다.
 
-## Terraform 밖에서 관리되는 현재 리소스
+## `dr-data`
+
+- EKS와 같은 VPC의 private Multi-AZ RDS PostgreSQL 16
+- GCP VPC Private Service Access를 사용하는 private Cloud SQL PostgreSQL 16
+- AWS Site-to-Site VPN 두 연결과 GCP HA VPN/BGP
+- 앱 DB/DMS/Cloud SQL 관리자 secret container와 최소 secret accessor binding
+- Google DMS가 변경하는 Cloud SQL backup/PITR 값은 service-owned drift로 분리
+
+## Terraform 밖에서 관리되는 리소스
 
 아래는 이 저장소에서 삭제하거나 재생성하지 않는다.
 
-- DMS PoC에서 만든 RDS PostgreSQL
-- GCP Cloud SQL PostgreSQL read replica와 Google DMS migration job
-- DB schema, DB role/password, 초기 데모 데이터
+- Google DMS migration job과 connection profile
+- DB schema, DB role/password, 초기 데모 데이터 및 secret version
 - GitHub repository, Environment reviewer, Actions variables/secrets
-
-따라서 `scripts/destroy-lab.ps1`은 DMS PoC DB를 함께 지우지 않는다.
 
 ## GitHub Actions의 IaC 제어
 
-- PR: 다섯 stack 모두 `fmt -check`, `init -backend=false`, `validate`
-- 수동 `plan`: AWS/GCP 네 운영 stack, 공급자별 GitHub OIDC로 read/plan
-- 수동 `apply`: `infrastructure-production` Environment 승인 뒤 새 plan 파일을 만들고 그
-  파일만 apply
+- PR: 여섯 stack 모두 `fmt -check`, `init -backend=false`, `validate`, speculative plan
+- 수동 `plan`: 선택한 deployment/stack을 공급자별 GitHub OIDC로 read/plan
+- 수동 `apply`: 승인 전에 저장한 plan artifact를 `infrastructure-production` Environment
+  승인 뒤 그대로 apply
+- 같은 deployment의 stack apply는 concurrency group으로 직렬화
 - 앱 CI와 Terraform workflow는 서로 다른 IAM role 사용
 
 검증 실행:
@@ -125,6 +133,6 @@ plan에는 EKS access entry 교체와 destroy가 없다. 남은 1개 in-place �
 1. KMS 관리자 정책 1건의 in-place plan을 검토하고 승인 apply 여부 결정
 2. branch protection과 CI required check 적용
 3. Terraform role 최소 권한화
-4. GKE Pilot Light stack을 별도 state로 추가
-5. GCP DB bootstrap과 승인형 DR을 비운영 훈련으로 검증
-6. RTO/RPO, DNS TTL, DMS lag, 승인 시간을 한 타임라인으로 계측
+4. 기존 GAR/WIF의 Terraform import에 필요한 GCP 권한 승인
+5. private DB/VPN/DMS와 승인형 DR을 비운영 훈련으로 재검증
+6. RTO/RPO, DMS lag, 승인 시간을 한 타임라인으로 계측

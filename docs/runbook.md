@@ -3,20 +3,22 @@
 ## 최초 1회
 
 1. AWS/GCP remote-state bucket을 생성합니다: `scripts/bootstrap-state.ps1`.
-2. `terraform/aws-infra`를 init/plan/apply합니다.
-3. 기존 RDS의 두 DB에 애플리케이션 계정을 만들고 Secrets Manager의
-   `phase1/bank-app/runtime`, `phase1/bank-app/jwt`에 값을 등록합니다.
-4. `terraform/gcp-cicd`를 기준으로 관리자가 GAR와 GitHub WIF를 한 번 부트스트랩합니다.
+2. GitHub의 `Terraform plan and apply`에서 `aws-infra`, `gcp-cicd`, `gcp-dr`를 차례로
+   plan하고 `infrastructure-production` 승인 뒤 각 saved plan을 apply합니다.
+3. `dr-data`를 plan/apply해 private RDS PostgreSQL 16, private Cloud SQL PostgreSQL 16,
+   HA VPN과 DB Secret Manager container를 만듭니다.
+4. `aws-addons`, `gcp-addons`를 plan/apply합니다.
 5. Terraform 출력으로 GitHub variables를 등록하고, 앱 저장소에는 GitOps 저장소 하나만
    선택한 단기 Fine-grained PAT를 `GITOPS_TOKEN` Actions secret으로 등록합니다.
    승인형 DR이 GitOps 저장소에 activation/restore commit을 남기도록 GitOps 저장소의
    `gcp-dr-approval` Environment에도 push 권한이 있는 `GITOPS_TOKEN`을 등록합니다.
-6. 앱 저장소의 `Service CI and GitOps promotion`을 실행해 여섯 이미지를 양쪽 Registry에
+6. `Database DR bootstrap and CDC validation`을 `bootstrap-source` → `create-dms` →
+   `validate-cdc` → `readiness` 순서로 실행합니다.
+7. 앱 저장소의 `Service CI and GitOps promotion`을 실행해 여섯 이미지를 양쪽 Registry에
    넣고 GitOps 태그를 `sha-<commit>`으로 변경합니다.
-7. `terraform/aws-addons`를 apply합니다.
-8. `scripts/bootstrap-argocd.ps1`로 Argo Application을 한 번 등록합니다.
-9. `terraform/gcp-dr`과 `terraform/gcp-addons`를 적용하고 GCP Argo Application을 등록합니다.
-10. DB가 없는 동안 GCP 업무 replicas 0과 `DR_DB_BOOTSTRAP_READY=false`를 유지합니다.
+8. `scripts/bootstrap-argocd.ps1`로 AWS Argo Application을 한 번 등록합니다.
+9. GCP Argo Application을 등록하고 업무 replicas 0을 확인합니다.
+10. 실제 CDC 검증이 완료되기 전에는 `DR_DB_BOOTSTRAP_READY=false`를 유지합니다.
 
 ## GCP 플랫폼 사전 점검
 
@@ -63,7 +65,7 @@ CI는 그 이미지 하나만 새 SHA 태그로 ECR/GAR에 푸시하고 GitOps�
 ## 비용/삭제
 
 이 실습에서 새로 비용이 큰 항목은 EKS control plane, EC2 노드 2대, NAT Gateway, ALB입니다.
-완료 후 `scripts/destroy-lab.ps1`로 add-ons → AWS infra 순으로 삭제합니다. GAR/WIF는
-GCP 관리자 부트스트랩 리소스이므로 별도 확인 후 삭제합니다.
-기존 DMS PoC의 RDS, Cloud SQL, DMS는 이 Terraform state에 포함하지 않아 자동 삭제되지
-않습니다.
+RDS, Cloud SQL과 VPN은 `dr-data` state에 포함되므로 비용 중단 시 함께 검토해야 합니다.
+Google DMS migration job/connection profile은 workflow가 만들며 Terraform state 밖에 있으므로,
+데이터 보존·승격 여부를 확인한 뒤 별도로 정리해야 합니다. State bucket은 인프라보다 먼저
+삭제하지 않습니다. 전체 재실행 규칙은 `docs/reusable-cicd-iac.md`를 따릅니다.

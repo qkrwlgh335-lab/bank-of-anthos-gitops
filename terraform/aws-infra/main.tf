@@ -64,10 +64,10 @@ module "eks" {
   ]
 
   addons = {
-    coredns                = { most_recent = true }
-    kube-proxy             = { most_recent = true }
-    vpc-cni                = { most_recent = true, before_compute = true }
-    eks-pod-identity-agent = { most_recent = true, before_compute = true }
+    coredns                = { addon_version = var.eks_addon_versions["coredns"] }
+    kube-proxy             = { addon_version = var.eks_addon_versions["kube-proxy"] }
+    vpc-cni                = { addon_version = var.eks_addon_versions["vpc-cni"], before_compute = true }
+    eks-pod-identity-agent = { addon_version = var.eks_addon_versions["eks-pod-identity-agent"], before_compute = true }
   }
 
   vpc_id     = module.vpc.vpc_id
