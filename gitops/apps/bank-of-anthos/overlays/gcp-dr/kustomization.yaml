@@ -7,7 +7,7 @@ resources:
   - namespace.yaml
   - ../../base
   - external-secrets.yaml
-  - ingress.yaml
+  # DR-ACTIVATION-RESOURCE: the approved failover workflow adds ingress.yaml here.
 
 images:
   - name: us-central1-docker.pkg.dev/bank-of-anthos-ci/bank-of-anthos/frontend
@@ -47,7 +47,7 @@ replicas:
     count: 0
 
 patches:
-  - path: frontend-neg-patch.yaml
+  # DR-ACTIVATION-PATCH: the approved failover workflow adds frontend-neg-patch.yaml here.
   - target:
       kind: Deployment
       labelSelector: application=bank-of-anthos

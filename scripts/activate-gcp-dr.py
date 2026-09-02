@@ -48,6 +48,26 @@ def main() -> None:
     )
     if redis_count != 1:
         raise SystemExit("missing or duplicate redis replica entry")
+
+    resource_marker = (
+        "  # DR-ACTIVATION-RESOURCE: the approved failover workflow adds ingress.yaml here."
+    )
+    ingress_resource = "  - ingress.yaml"
+    if ingress_resource not in content:
+        if resource_marker not in content:
+            raise SystemExit("missing DR ingress activation marker")
+        content = content.replace(resource_marker, ingress_resource, 1)
+
+    patch_marker = (
+        "  # DR-ACTIVATION-PATCH: the approved failover workflow adds "
+        "frontend-neg-patch.yaml here."
+    )
+    ingress_patch = "  - path: frontend-neg-patch.yaml"
+    if ingress_patch not in content:
+        if patch_marker not in content:
+            raise SystemExit("missing DR NEG activation marker")
+        content = content.replace(patch_marker, ingress_patch, 1)
+
     path.write_text(content, encoding="utf-8", newline="\n")
 
 
