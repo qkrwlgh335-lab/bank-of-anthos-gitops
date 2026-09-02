@@ -8,3 +8,4 @@ artifact_repository                = "bank-of-anthos"
 app_ci_service_account_id          = "github-bank-app-ci"
 workload_identity_pool_id          = "github-phase1"
 workload_identity_provider_id      = "github-provider"
+adopt_existing_resources           = true

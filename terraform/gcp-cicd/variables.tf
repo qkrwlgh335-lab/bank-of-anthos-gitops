@@ -51,3 +51,9 @@ variable "workload_identity_provider_id" {
   type        = string
   default     = "github-provider"
 }
+
+variable "adopt_existing_resources" {
+  description = "Import the pre-existing Phase 1 registry, service account, and WIF resources instead of trying to recreate their unique names"
+  type        = bool
+  default     = false
+}
