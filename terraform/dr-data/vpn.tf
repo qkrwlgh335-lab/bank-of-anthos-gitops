@@ -103,7 +103,7 @@ resource "aws_vpn_connection" "gcp_interface_1" {
 }
 
 resource "aws_vpn_gateway_route_propagation" "private" {
-  for_each = data.aws_route_tables.private.ids
+  for_each = toset(data.aws_route_tables.private.ids)
 
   route_table_id = each.value
   vpn_gateway_id = aws_vpn_gateway.gcp.id
