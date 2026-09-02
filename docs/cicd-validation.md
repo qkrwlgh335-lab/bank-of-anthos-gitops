@@ -96,3 +96,9 @@ curl.exe "http://$AlbHost/ready"
 - DNS 실제 전환
 - branch protection, HTTPS, 관측성, NetworkPolicy
 
+## IaC 재검증 결과
+
+[최종 Terraform run 33573683695](https://github.com/qkrwlgh335-lab/bank-of-anthos-gitops/actions/runs/33573683695)에서
+세 stack의 format/validate와 GitHub OIDC 인증이 성공했다. `aws-infra` plan은
+`0 add, 1 change, 0 destroy`이며, 남은 1개는 실행 주체를 고정하기 위한 KMS key policy
+in-place 변경이다. 실제 apply는 수행하지 않았다.

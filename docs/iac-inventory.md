@@ -87,11 +87,14 @@ GitOps 저장소를 pull해 배포한다.
 
 검증 실행:
 
-- [aws-infra plan run 33551928633](https://github.com/qkrwlgh335-lab/bank-of-anthos-gitops/actions/runs/33551928633)
+- [최종 aws-infra plan run 33573683695](https://github.com/qkrwlgh335-lab/bank-of-anthos-gitops/actions/runs/33573683695):
+  `0 add, 1 change, 0 destroy`
 - [aws-addons plan run 33551933469](https://github.com/qkrwlgh335-lab/bank-of-anthos-gitops/actions/runs/33551933469): `No changes`
 
-첫 aws-infra 실행에서 실행 주체 의존 access/KMS drift를 발견했고 코드에서 제거했다. 수정
-후 plan 결과는 새 검증 실행을 기준으로 기록한다. 검토 전에는 `apply`하지 않는다.
+첫 aws-infra 실행에서 실행 주체 의존 access/KMS drift를 발견했고 코드에서 제거했다. 최종
+plan에는 EKS access entry 교체와 destroy가 없다. 남은 1개 in-place 변경은 KMS 관리자
+목록에 Terraform OIDC role을 명시적으로 추가하는 정책 변경이다. 이 변경은
+`infrastructure-production` 승인 후에만 apply하며, 이 문서 작성 중에는 apply하지 않았다.
 
 ## 현재 PoC에서 의도적으로 단순화한 부분
 
@@ -106,10 +109,9 @@ GitOps 저장소를 pull해 배포한다.
 
 ## 다음 구현 우선순위
 
-1. `aws-infra` 안정화 plan을 검토하고 승인 apply 여부 결정
+1. KMS 관리자 정책 1건의 in-place plan을 검토하고 승인 apply 여부 결정
 2. branch protection과 CI required check 적용
 3. Terraform role 최소 권한화
 4. GKE Pilot Light stack을 별도 state로 추가
 5. GCP DB bootstrap과 승인형 DR을 비운영 훈련으로 검증
 6. RTO/RPO, DNS TTL, DMS lag, 승인 시간을 한 타임라인으로 계측
-
