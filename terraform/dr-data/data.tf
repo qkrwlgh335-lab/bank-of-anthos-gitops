@@ -17,6 +17,7 @@ locals {
     data.terraform_remote_state.gcp_dr.outputs.router_name,
     var.gcp_router_name,
   )
+  gcp_dr_control_service_account = data.terraform_remote_state.gcp_dr.outputs.dr_control_service_account
 }
 
 data "terraform_remote_state" "gcp_dr" {
@@ -53,10 +54,6 @@ data "aws_route_tables" "private" {
     name   = "tag:Name"
     values = ["${var.aws_vpc_name}-private"]
   }
-}
-
-data "aws_eks_cluster" "primary" {
-  name = var.aws_eks_cluster_name
 }
 
 data "aws_security_group" "eks_nodes" {

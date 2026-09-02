@@ -67,6 +67,10 @@ resource "google_sql_database_instance" "standby" {
   ]
 
   lifecycle {
+    # Google DMS changes backup/PITR settings while demoting and promoting an
+    # existing destination. Terraform must not undo those service-owned values.
+    ignore_changes = [settings[0].backup_configuration]
+
     precondition {
       condition     = data.google_project.current.project_id == var.gcp_project_id
       error_message = "Refusing to create Cloud SQL outside the approved GCP project."
@@ -90,4 +94,27 @@ resource "google_secret_manager_secret" "cloudsql_admin" {
   replication {
     auto {}
   }
+}
+
+resource "google_secret_manager_secret" "app_database" {
+  project   = var.gcp_project_id
+  secret_id = "${var.resource_name_prefix}-app-db"
+
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_iam_member" "dr_control_cloudsql_admin" {
+  project   = var.gcp_project_id
+  secret_id = google_secret_manager_secret.cloudsql_admin.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${local.gcp_dr_control_service_account}"
+}
+
+resource "google_secret_manager_secret_iam_member" "dr_control_app_database" {
+  project   = var.gcp_project_id
+  secret_id = google_secret_manager_secret.app_database.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${local.gcp_dr_control_service_account}"
 }

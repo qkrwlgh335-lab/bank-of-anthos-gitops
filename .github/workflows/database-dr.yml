@@ -42,7 +42,7 @@ env:
   DMS_SOURCE_PROFILE: phase1-bank-rds-source
   DMS_DESTINATION_PROFILE: phase1-bank-cloudsql-destination
   DMS_MIGRATION_JOB: phase1-bank-rds-to-cloudsql
-  POSTGRES_IMAGE: postgres:16.14-alpine
+  POSTGRES_IMAGE: postgres:16.14-alpine@sha256:e013e867e712fec275706a6c51c966f0bb0c93cfa8f51000f85a15f9865a28cb
 
 jobs:
   database-dr:
@@ -123,6 +123,27 @@ jobs:
           RDS_HOST: ${{ steps.inventory.outputs.rds_host }}
         run: |
           set -Eeuo pipefail
+
+          put_aws_secret_if_changed() {
+            local secret_id="$1" desired="$2" current=""
+            current=$(aws secretsmanager get-secret-value --secret-id "$secret_id" \
+              --query SecretString --output text 2>/dev/null || true)
+            if [[ "$current" != "$desired" ]]; then
+              aws secretsmanager put-secret-value --secret-id "$secret_id" \
+                --secret-string "$desired" >/dev/null
+            fi
+          }
+
+          add_gcp_secret_version_if_changed() {
+            local secret_id="$1" desired="$2" current=""
+            current=$(gcloud secrets versions access latest --secret "$secret_id" \
+              --project "$GCP_PROJECT_ID" 2>/dev/null || true)
+            if [[ "$current" != "$desired" ]]; then
+              printf '%s' "$desired" | gcloud secrets versions add "$secret_id" \
+                --project "$GCP_PROJECT_ID" --data-file=- >/dev/null
+            fi
+          }
+
           aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION" \
             --kubeconfig "$RUNNER_TEMP/aws-kubeconfig" >/dev/null
           export KUBECONFIG="$RUNNER_TEMP/aws-kubeconfig"
@@ -189,10 +210,8 @@ jobs:
             --arg host "$RDS_HOST" --arg password "$dms_password" \
             '{host:$host,port:5432,username:"dms_user",password:$password}')
 
-          aws secretsmanager put-secret-value --secret-id phase1/bank-db/app \
-            --secret-string "$app_json" >/dev/null
-          aws secretsmanager put-secret-value --secret-id phase1/bank-db/dms \
-            --secret-string "$dms_json" >/dev/null
+          put_aws_secret_if_changed phase1/bank-db/app "$app_json"
+          put_aws_secret_if_changed phase1/bank-db/dms "$dms_json"
 
           kubectl -n bank-db-admin create secret generic rds-bootstrap \
             --from-literal=PGHOST="$RDS_HOST" --from-literal=PGPORT=5432 \
@@ -230,18 +249,16 @@ jobs:
             --arg ledger_url "jdbc:postgresql://${RDS_HOST}:5432/ledger-db?sslmode=require" \
             --arg ledger_password "$ledger_password" \
             '{ACCOUNTS_DB_URI:$accounts,SPRING_DATASOURCE_URL:$ledger_url,SPRING_DATASOURCE_USERNAME:"ledger_admin",SPRING_DATASOURCE_PASSWORD:$ledger_password,REDIS_URL:"redis://redis:6379/0"}')
-          aws secretsmanager put-secret-value --secret-id phase1/bank-app/runtime \
-            --secret-string "$runtime_json" >/dev/null
+          put_aws_secret_if_changed phase1/bank-app/runtime "$runtime_json"
 
-          printf '%s' "$dms_json" | gcloud secrets versions add phase1-bank-dms-source \
-            --project "$GCP_PROJECT_ID" --data-file=- >/dev/null
+          add_gcp_secret_version_if_changed phase1-bank-dms-source "$dms_json"
+          add_gcp_secret_version_if_changed phase1-bank-app-db "$app_json"
 
           cloudsql_password=$(gcloud secrets versions access latest \
             --secret phase1-bank-cloudsql-admin --project "$GCP_PROJECT_ID" 2>/dev/null || true)
           if [[ -z "$cloudsql_password" ]]; then
             cloudsql_password=$(openssl rand -hex 24)
-            printf '%s' "$cloudsql_password" | gcloud secrets versions add phase1-bank-cloudsql-admin \
-              --project "$GCP_PROJECT_ID" --data-file=- >/dev/null
+            add_gcp_secret_version_if_changed phase1-bank-cloudsql-admin "$cloudsql_password"
           fi
           echo "::add-mask::$cloudsql_password"
           gcloud sql users set-password postgres --instance "$CLOUD_SQL_INSTANCE" \
@@ -253,8 +270,7 @@ jobs:
             --arg ledger_url "jdbc:postgresql://${cloudsql_ip}:5432/ledger-db?sslmode=require" \
             --arg ledger_password "$ledger_password" \
             '{ACCOUNTS_DB_URI:$accounts,SPRING_DATASOURCE_URL:$ledger_url,SPRING_DATASOURCE_USERNAME:"ledger_admin",SPRING_DATASOURCE_PASSWORD:$ledger_password,REDIS_URL:"redis://redis:6379/0"}')
-          printf '%s' "$gcp_runtime" | gcloud secrets versions add phase1-bank-app-runtime \
-            --project "$GCP_PROJECT_ID" --data-file=- >/dev/null
+          add_gcp_secret_version_if_changed phase1-bank-app-runtime "$gcp_runtime"
 
           echo "- Source schema: official Bank of Anthos accounts/ledger plus a PK-based CDC probe" >> "$GITHUB_STEP_SUMMARY"
           echo "- Credentials: generated and stored only in AWS/GCP secret managers" >> "$GITHUB_STEP_SUMMARY"
@@ -306,13 +322,54 @@ jobs:
               --dump-parallel-level=MIN
           fi
 
-          gcloud database-migration migration-jobs verify "$DMS_MIGRATION_JOB" \
-            --region "$GCP_REGION" --project "$GCP_PROJECT_ID" --quiet
-          state=$(gcloud database-migration migration-jobs describe "$DMS_MIGRATION_JOB" \
-            --region "$GCP_REGION" --project "$GCP_PROJECT_ID" --format='value(state)')
-          if [[ "$state" == "DRAFT" || "$state" == "NOT_STARTED" || "$state" == "STOPPED" ]]; then
-            gcloud database-migration migration-jobs start "$DMS_MIGRATION_JOB" \
-              --region "$GCP_REGION" --project "$GCP_PROJECT_ID" --quiet
+          read -r state phase < <(gcloud database-migration migration-jobs describe "$DMS_MIGRATION_JOB" \
+            --region "$GCP_REGION" --project "$GCP_PROJECT_ID" --format='value(state,phase)')
+
+          if [[ "$state" == "RUNNING" && "$phase" == "CDC" ]]; then
+            echo "DMS is already RUNNING/CDC; no create, demote, or start action is needed"
+          else
+            case "$state" in
+              DRAFT|NOT_STARTED)
+                sql_type=$(gcloud sql instances describe "$CLOUD_SQL_INSTANCE" \
+                  --project "$GCP_PROJECT_ID" --format='value(instanceType)')
+                if [[ "$sql_type" != "READ_REPLICA_INSTANCE" ]]; then
+                  gcloud database-migration migration-jobs verify "$DMS_MIGRATION_JOB" \
+                    --region "$GCP_REGION" --project "$GCP_PROJECT_ID" --quiet
+                  gcloud database-migration migration-jobs demote-destination "$DMS_MIGRATION_JOB" \
+                    --region "$GCP_REGION" --project "$GCP_PROJECT_ID" --quiet
+
+                  for attempt in {1..60}; do
+                    read -r sql_type sql_state < <(gcloud sql instances describe "$CLOUD_SQL_INSTANCE" \
+                      --project "$GCP_PROJECT_ID" --format='value(instanceType,state)')
+                    echo "Cloud SQL demotion attempt=$attempt type=$sql_type state=$sql_state"
+                    [[ "$sql_type" == "READ_REPLICA_INSTANCE" && "$sql_state" == "RUNNABLE" ]] && break
+                    sleep 20
+                  done
+                  [[ "$sql_type" == "READ_REPLICA_INSTANCE" && "$sql_state" == "RUNNABLE" ]] || {
+                    echo "Cloud SQL destination demotion did not complete"; exit 1;
+                  }
+                else
+                  echo "Cloud SQL is already demoted; resuming the interrupted workflow"
+                fi
+                gcloud database-migration migration-jobs start "$DMS_MIGRATION_JOB" \
+                  --region "$GCP_REGION" --project "$GCP_PROJECT_ID" --quiet
+                ;;
+              STOPPED)
+                gcloud database-migration migration-jobs start "$DMS_MIGRATION_JOB" \
+                  --region "$GCP_REGION" --project "$GCP_PROJECT_ID" --quiet
+                ;;
+              FAILED)
+                gcloud database-migration migration-jobs restart "$DMS_MIGRATION_JOB" \
+                  --region "$GCP_REGION" --project "$GCP_PROJECT_ID" --quiet
+                ;;
+              STARTING|RUNNING|RESTARTING)
+                echo "DMS transition is already in progress: $state / $phase"
+                ;;
+              *)
+                echo "DMS state requires operator review: $state / $phase"
+                exit 1
+                ;;
+            esac
           fi
 
           for attempt in {1..60}; do

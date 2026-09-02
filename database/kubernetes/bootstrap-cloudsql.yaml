@@ -1,0 +1,55 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bank-cloudsql-bootstrap
+  namespace: bank-db-admin
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: bank-cloudsql-bootstrap
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: postgres
+          image: postgres:16.14-alpine@sha256:e013e867e712fec275706a6c51c966f0bb0c93cfa8f51000f85a15f9865a28cb
+          envFrom:
+            - secretRef:
+                name: cloudsql-bootstrap
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              psql -d postgres \
+                -v accounts_user=accounts_admin -v accounts_password="$ACCOUNTS_PASSWORD" \
+                -v ledger_user=ledger_admin -v ledger_password="$LEDGER_PASSWORD" \
+                -f /bootstrap/03-cloudsql-app-roles.sql
+
+              psql -d accounts-db -v app_user=accounts_admin <<'SQL'
+              \set ON_ERROR_STOP on
+              GRANT CONNECT ON DATABASE "accounts-db" TO :"app_user";
+              GRANT USAGE ON SCHEMA public TO :"app_user";
+              GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO :"app_user";
+              GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO :"app_user";
+              SQL
+
+              psql -d ledger-db -v app_user=ledger_admin <<'SQL'
+              \set ON_ERROR_STOP on
+              GRANT CONNECT ON DATABASE "ledger-db" TO :"app_user";
+              GRANT USAGE ON SCHEMA public TO :"app_user";
+              GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO :"app_user";
+              GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO :"app_user";
+              SQL
+
+              PGPASSWORD="$ACCOUNTS_PASSWORD" psql -d accounts-db -U accounts_admin -Atc 'SELECT 1'
+              PGPASSWORD="$LEDGER_PASSWORD" psql -d ledger-db -U ledger_admin -Atc 'SELECT 1'
+              echo "CLOUDSQL_APP_ROLES_OK"
+          volumeMounts:
+            - name: bootstrap
+              mountPath: /bootstrap
+              readOnly: true
+      volumes:
+        - name: bootstrap
+          configMap:
+            name: bank-cloudsql-bootstrap-sql

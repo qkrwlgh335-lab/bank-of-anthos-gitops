@@ -320,17 +320,23 @@ jobs:
           }
           state=$(gcloud database-migration migration-jobs describe "$MIGRATION_JOB" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(state)')
           phase=$(gcloud database-migration migration-jobs describe "$MIGRATION_JOB" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(phase)')
-          [[ "$phase" == "CDC" ]] || { echo "Destination never reached CDC"; exit 1; }
-          if [[ "$MODE" == "data-preflight" && "$state" != "RUNNING" ]]; then
-            echo "Routine readiness requires DMS RUNNING/CDC"
+          read -r sql_type sql_state < <(gcloud sql instances describe "$CLOUD_SQL_INSTANCE" --project "$GCP_PROJECT_ID" --format='value(instanceType,state)')
+
+          if [[ "$sql_type" == "READ_REPLICA_INSTANCE" && "$sql_state" == "RUNNABLE" ]]; then
+            [[ "$phase" == "CDC" ]] || { echo "Destination never reached CDC"; exit 1; }
+            if [[ "$MODE" == "data-preflight" && "$state" != "RUNNING" ]]; then
+              echo "Routine readiness requires DMS RUNNING/CDC"
+              exit 1
+            fi
+            if [[ "$MODE" == "failover" && "$state" != "RUNNING" ]]; then
+              echo "::warning::DMS is $state; only the last data already replicated to GCP is available"
+            fi
+          elif [[ "$MODE" == "failover" && "$sql_type" != "READ_REPLICA_INSTANCE" && "$sql_state" == "RUNNABLE" && "$state" == "COMPLETED" ]]; then
+            echo "::warning::Destination is already promoted; resuming an interrupted approved failover"
+          else
+            echo "Cloud SQL/DMS combination is not safe for this operation: $sql_type / $sql_state / $state / $phase"
             exit 1
           fi
-          if [[ "$MODE" == "failover" && "$state" != "RUNNING" ]]; then
-            echo "::warning::DMS is $state; only the last data already replicated to GCP is available"
-          fi
-
-          read -r sql_type sql_state < <(gcloud sql instances describe "$CLOUD_SQL_INSTANCE" --project "$GCP_PROJECT_ID" --format='value(instanceType,state)')
-          [[ "$sql_type" == "READ_REPLICA_INSTANCE" && "$sql_state" == "RUNNABLE" ]] || { echo "Cloud SQL is not a runnable migration replica"; exit 1; }
           {
             echo "### GCP data preflight"
             echo "- DMS: $state / $phase"
@@ -364,7 +370,15 @@ jobs:
       - name: Promote Cloud SQL destination to writer
         run: |
           set -Eeuo pipefail
-          gcloud database-migration migration-jobs promote "$MIGRATION_JOB" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --quiet
+          read -r sql_type sql_state < <(gcloud sql instances describe "$CLOUD_SQL_INSTANCE" \
+            --project "$GCP_PROJECT_ID" --format='value(instanceType,state)')
+          if [[ "$sql_type" != "READ_REPLICA_INSTANCE" && "$sql_state" == "RUNNABLE" ]]; then
+            echo "Cloud SQL is already a writer; skipping duplicate promotion"
+            exit 0
+          fi
+
+          gcloud database-migration migration-jobs promote "$MIGRATION_JOB" \
+            --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --quiet
           for attempt in {1..30}; do
             read -r sql_type sql_state < <(gcloud sql instances describe "$CLOUD_SQL_INSTANCE" --project "$GCP_PROJECT_ID" --format='value(instanceType,state)')
             if [[ "$sql_type" != "READ_REPLICA_INSTANCE" && "$sql_state" == "RUNNABLE" ]]; then
@@ -374,6 +388,54 @@ jobs:
           done
           echo "Cloud SQL promotion did not become ready within 10 minutes"
           exit 1
+
+      - name: Enable point-in-time recovery after promotion
+        run: |
+          set -Eeuo pipefail
+          gcloud sql instances patch "$CLOUD_SQL_INSTANCE" --project "$GCP_PROJECT_ID" \
+            --enable-point-in-time-recovery --quiet
+
+      - name: Restore application roles and grants inside GKE
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          app_json=$(gcloud secrets versions access latest --secret phase1-bank-app-db \
+            --project "$GCP_PROJECT_ID")
+          accounts_password=$(jq -r '.accounts_password' <<<"$app_json")
+          ledger_password=$(jq -r '.ledger_password' <<<"$app_json")
+          postgres_password=$(gcloud secrets versions access latest \
+            --secret phase1-bank-cloudsql-admin --project "$GCP_PROJECT_ID")
+          cloudsql_ip=$(gcloud sql instances describe "$CLOUD_SQL_INSTANCE" \
+            --project "$GCP_PROJECT_ID" --format=json | \
+            jq -r '.ipAddresses[] | select(.type == "PRIVATE") | .ipAddress')
+          echo "::add-mask::$accounts_password"
+          echo "::add-mask::$ledger_password"
+          echo "::add-mask::$postgres_password"
+          [[ -n "$cloudsql_ip" ]] || { echo "Cloud SQL private IP is empty"; exit 1; }
+
+          kubectl create namespace bank-db-admin --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+          kubectl -n bank-db-admin create secret generic cloudsql-bootstrap \
+            --from-literal=PGHOST="$cloudsql_ip" --from-literal=PGPORT=5432 \
+            --from-literal=PGUSER=postgres --from-literal=PGPASSWORD="$postgres_password" \
+            --from-literal=PGSSLMODE=require \
+            --from-literal=ACCOUNTS_PASSWORD="$accounts_password" \
+            --from-literal=LEDGER_PASSWORD="$ledger_password" \
+            --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+          trap 'kubectl -n bank-db-admin delete secret cloudsql-bootstrap --ignore-not-found >/dev/null || true' EXIT
+          kubectl -n bank-db-admin create configmap bank-cloudsql-bootstrap-sql \
+            --from-file=database/bootstrap/03-cloudsql-app-roles.sql \
+            --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+          kubectl -n bank-db-admin delete job bank-cloudsql-bootstrap --ignore-not-found --wait=true >/dev/null
+          kubectl apply -f database/kubernetes/bootstrap-cloudsql.yaml >/dev/null
+          if ! kubectl -n bank-db-admin wait job/bank-cloudsql-bootstrap \
+            --for=condition=Complete --timeout=10m; then
+            kubectl -n bank-db-admin describe job bank-cloudsql-bootstrap || true
+            kubectl -n bank-db-admin logs job/bank-cloudsql-bootstrap || true
+            exit 1
+          fi
+          kubectl -n bank-db-admin logs job/bank-cloudsql-bootstrap
+          kubectl -n bank-db-admin delete secret cloudsql-bootstrap >/dev/null
+          trap - EXIT
 
       - name: Expand pilot-light GKE capacity
         run: |
@@ -386,12 +448,18 @@ jobs:
           TAG: ${{ inputs.image_tag }}
           INCIDENT_ID: ${{ inputs.incident_id }}
         run: |
+          set -Eeuo pipefail
+          git pull --ff-only origin main
           python scripts/activate-gcp-dr.py --file gitops/apps/bank-of-anthos/overlays/gcp-dr/kustomization.yaml --tag "$TAG" --replicas 1
           git config user.name "dr-failover-bot"
           git config user.email "dr-failover-bot@users.noreply.github.com"
           git add gitops/apps/bank-of-anthos/overlays/gcp-dr/kustomization.yaml
-          git commit -m "dr: activate GCP for ${INCIDENT_ID} with ${TAG}"
-          git push origin HEAD:main
+          if ! git diff --cached --quiet; then
+            git commit -m "dr: activate GCP for ${INCIDENT_ID} with ${TAG}"
+            git push origin HEAD:main
+          else
+            echo "GCP overlay already contains the approved tag and replica count"
+          fi
 
       - name: Reconcile and smoke test
         run: |

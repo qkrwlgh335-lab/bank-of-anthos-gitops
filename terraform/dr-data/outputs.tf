@@ -48,6 +48,10 @@ output "gcp_cloudsql_admin_secret_id" {
   value = google_secret_manager_secret.cloudsql_admin.secret_id
 }
 
+output "gcp_app_database_secret_id" {
+  value = google_secret_manager_secret.app_database.secret_id
+}
+
 output "aws_vpn_connection_ids" {
   value = [
     aws_vpn_connection.gcp_interface_0.id,
